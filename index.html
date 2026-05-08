@@ -35,7 +35,8 @@
 </script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script type="text/babel" data-presets="react">
 const {useState,useEffect}=React;
 
@@ -1466,92 +1467,13 @@ function BackupCard({data,profile,setData,setProfile}){
   );
 }
 
-// ── Mount ─────────────────────────────────────────────────────────────────────
-function AppRoot(){
-  const [data,setData]=useState({});
-  const [profile,setProfile]=useState(null);
-  const [tab,setTab]=useState("nutrition");
-  const [loaded,setLoaded]=useState(false);
-  const [showSetup,setShowSetup]=useState(false);
-  const [celebration,setCelebration]=useState(null);
-
-  useEffect(()=>{
-    const saved=_loadData();
-    if(saved){setData(saved.data||{});setProfile(saved.profile||null);}
-    setLoaded(true);
-  },[]);
-
-  useEffect(()=>{ if(!loaded)return; _saveData({data,profile}); },[data,profile,loaded]);
-
-  if(!loaded) return <div style={{background:"#F4F1ED",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#A89B90",fontSize:14,fontFamily:"sans-serif"}}>Loading…</div>;
-  if(!profile||showSetup) return <Setup profile={profile} setProfile={p=>{setProfile(p);setShowSetup(false);}} onDone={()=>setShowSetup(false)}/>;
-
-  const todayStr=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
-  const streak=calcStreak(data);
-  const today=todayKey();
-  const done=data.done?.[today]||{};
-  const doneCount=[done.nutrition,done.workout,done.body].filter(Boolean).length;
-
-  const TABS=[
-    {id:"nutrition",label:"Nutrition",icon:"🥗",color:"#16A34A"},
-    {id:"workout",label:"Activity",icon:"💪",color:"#EA580C"},
-    {id:"body",label:"Body",icon:"📏",color:"#7C3AED"},
-    {id:"progress",label:"Progress",icon:"📈",color:"#2563EB"},
-  ];
-
-  return (
-    <div style={{minHeight:"100vh",background:"#F4F1ED",color:"#1C1510",maxWidth:480,margin:"0 auto",paddingBottom:92,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
-      {celebration&&<Celebration message={celebration} onClose={()=>setCelebration(null)}/>}
-      <div style={{padding:"26px 18px 12px",background:"#fff",borderBottom:"1px solid #E6DFD8",display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 1px 6px rgba(0,0,0,0.05)"}}>
-        <div>
-          <div style={{fontSize:9,color:"#A89B90",letterSpacing:"0.14em",textTransform:"uppercase"}}>{todayStr}</div>
-          <h1 style={{fontSize:22,fontWeight:900,margin:"3px 0 0",color:"#E05A2B",letterSpacing:"-0.4px"}}>My Tracker</h1>
-          <div style={{fontSize:11,fontWeight:700,marginTop:3,color:doneCount===3?"#16A34A":doneCount>0?"#EA580C":"#A89B90"}}>
-            {doneCount===3?"🏆 All done today!":doneCount>0?`${doneCount}/3 done today`:"Nothing logged yet"}
-          </div>
-        </div>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",background:streak>0?"#DCFCE7":"#FAF8F5",borderRadius:99,border:`1px solid ${streak>0?"#86EFAC":"#E6DFD8"}`}}>
-            <span style={{fontSize:13}}>🔥</span>
-            <span style={{fontSize:12,fontWeight:800,color:streak>0?"#16A34A":"#A89B90"}}>{streak}d</span>
-          </div>
-          <button onClick={()=>setShowSetup(true)} style={{background:"#F4F1ED",border:"1.5px solid #E6DFD8",borderRadius:10,padding:"7px 12px",color:"#7A6F65",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>⚙</button>
-        </div>
-      </div>
-
-      <div style={{padding:"14px 14px 0"}}>
-        {tab==="nutrition"&&<NutritionTab data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
-        {tab==="workout"&&<WorkoutTab data={data} setData={setData} onCelebrate={setCelebration} profile={profile}/>}
-        {tab==="body"&&<BodyTab data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
-        {tab==="progress"&&<ProgressTab data={data} setData={setData} profile={profile} BackupCard={BackupCard}/>}
-      </div>
-
-      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:"#fff",borderTop:"1px solid #E6DFD8",display:"flex",padding:"8px 0 20px",boxShadow:"0 -2px 12px rgba(0,0,0,0.08)"}}>
-        {TABS.map(t=>{
-          const active=tab===t.id;
-          const tdone={nutrition:done.nutrition,workout:done.workout,body:done.body}[t.id];
-          return <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,border:"none",background:"none",cursor:"pointer",padding:"5px 2px",display:"flex",flexDirection:"column",alignItems:"center",gap:2,position:"relative"}}>
-            <span style={{fontSize:22}}>{t.icon}</span>
-            <span style={{fontSize:8,fontWeight:800,letterSpacing:"0.07em",color:active?t.color:"#A89B90"}}>{t.label.toUpperCase()}</span>
-            {active&&<div style={{width:22,height:3,borderRadius:99,background:t.color,marginTop:1}}/>}
-            {tdone&&!active&&<div style={{position:"absolute",top:3,right:"18%",width:8,height:8,borderRadius:"50%",background:"#16A34A",border:"2px solid #fff"}}/>}
-          </button>;
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Wire BackupCard into ProgressTab report subtab
-const _OrigProgressTab=ProgressTab;
-
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{
     navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(()=>{});
   });
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<AppRoot/>);
+ReactDOM.createRoot(document.getElementById('root')).render(<TrackerApp/>);
 </script>
 </body>
 </html>
