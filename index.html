@@ -20,9 +20,22 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<div id="fallback" style="display:none;padding:40px;text-align:center;font-family:sans-serif;color:#666;">
+  <h2>⚠️ Loading failed</h2>
+  <p>Please check your internet connection and reload the page.</p>
+  <button onclick="location.reload()" style="padding:12px 24px;background:#E05A2B;color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;">Reload</button>
+</div>
+<script>
+  // Show fallback if React doesn't mount within 8 seconds
+  setTimeout(function(){
+    if(!document.querySelector('#root > *')){
+      document.getElementById('fallback').style.display='block';
+    }
+  }, 8000);
+</script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script type="text/babel" data-presets="react">
 const {useState,useEffect}=React;
 
