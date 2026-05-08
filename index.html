@@ -78,7 +78,7 @@ function nDaysKeys(n) {
 function weekKeys() { return nDaysKeys(7); }
 function num(v) { return Number(v) || 0; }
 function fmtInt(v) { return (!v || isNaN(v)) ? "–" : Math.round(Number(v)).toLocaleString(); }
-function fmtDec(v, d = 1) { return (!v || isNaN(v)) ? "–" : Number(v).toFixed(d); }
+function fmtDec(v, d = 1) { return (!v || isNaN(v)) ? "–" : Number(v).toFixed(Math.min(d,2)); }
 function dayLabel(k, short = false) {
   if (k === todayKey()) return "Today";
   const d = new Date(k + "T00:00");
@@ -446,7 +446,7 @@ function CopyExport({ data, profile }) {
 }
 
 function Setup({ profile, setProfile, onDone }) {
-  const [p, setP] = useState(profile || { currentWeight:"", goalWeight:"", heightCm:"", age:"", sex:"male", bf:"", activity:"moderate", deficitGoal:500, macroGoals:null });
+  const [p, setP] = useState(profile || { currentWeight:"", goalWeight:"", heightCm:"", age:"", sex:"male", bf:"", activity:"moderate", deficitGoal:500, macroGoals:null, units:"imperial" });
   const [sub, setSub] = useState("basics");
   const set = (k,v) => setP(prev=>({...prev,[k]:v}));
 
@@ -478,14 +478,14 @@ function Setup({ profile, setProfile, onDone }) {
             <div style={s.card}>
               <SHead icon="⚖️" label="WEIGHT"/>
               <div style={{ padding:16, display:"flex", flexDirection:"column", gap:12 }}>
-                <Inp label="Current Weight" value={p.currentWeight} onChange={e=>set("currentWeight",e.target.value)} unit="lbs"/>
-                <Inp label="Goal Weight" value={p.goalWeight} onChange={e=>set("goalWeight",e.target.value)} unit="lbs"/>
+                <Inp label="Current Weight" value={p.currentWeight} onChange={e=>set("currentWeight",e.target.value)} unit={(p.units||"imperial")==="metric"?"kg":"lbs"}/>
+                <Inp label="Goal Weight" value={p.goalWeight} onChange={e=>set("goalWeight",e.target.value)} unit={(p.units||"imperial")==="metric"?"kg":"lbs"}/>
               </div>
             </div>
             <div style={s.card}>
               <SHead icon="📐" label="BODY STATS"/>
               <div style={{ padding:16, display:"flex", flexDirection:"column", gap:12 }}>
-                <Inp label="Height" value={p.heightCm} onChange={e=>set("heightCm",e.target.value)} unit="cm"/>
+                <Inp label="Height" value={p.heightCm} onChange={e=>set("heightCm",e.target.value)} unit={(p.units||"imperial")==="metric"?"cm":"ft/in"}/>
                 <Inp label="Age" value={p.age} onChange={e=>set("age",e.target.value)} unit="yrs"/>
                 <Inp label="Body Fat %" value={p.bf} onChange={e=>set("bf",e.target.value)} unit="%"/>
                 <div style={s.col}>
@@ -493,6 +493,14 @@ function Setup({ profile, setProfile, onDone }) {
                   <div style={{ ...s.row, gap:10 }}>
                     {["male","female"].map(sx=>(
                       <button key={sx} onClick={()=>set("sex",sx)} style={{ flex:1, padding:"12px 0", borderRadius:12, border:`2px solid ${p.sex===sx?T.accent:T.border}`, background:p.sex===sx?T.accentL:T.bg, color:p.sex===sx?T.accent:T.muted, fontWeight:800, fontSize:14, cursor:"pointer", textTransform:"capitalize", fontFamily:"inherit" }}>{sx}</button>
+                    ))}
+                  </div>
+                </div>
+                <div style={s.col}>
+                  <div style={{ ...s.lbl, marginBottom:6 }}>Units</div>
+                  <div style={{ ...s.row, gap:10 }}>
+                    {[["imperial","🇺🇸 Imperial (lbs/in)"],["metric","🌍 Metric (kg/cm)"]].map(([val,label])=>(
+                      <button key={val} onClick={()=>set("units",val)} style={{ flex:1, padding:"10px 6px", borderRadius:12, border:`2px solid ${(p.units||"imperial")===val?T.accent:T.border}`, background:(p.units||"imperial")===val?T.accentL:T.bg, color:(p.units||"imperial")===val?T.accent:T.muted, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>{label}</button>
                     ))}
                   </div>
                 </div>
@@ -873,10 +881,10 @@ function BodyTab({ data, setData, profile, onCelebrate }) {
         {/* Most recent weight */}
         {weightVals.filter(Boolean).length > 0 && (
           <div style={{ padding:"0 16px 14px", ...s.row, gap:16 }}>
-            <SBox label="Latest Weight" value={`${weightVals.filter(Boolean).slice(-1)[0]} lbs`} color={T.blue} bg={T.blueL}/>
-            <SBox label="Goal Weight" value={`${num(profile.goalWeight)||"–"} lbs`} color={T.green} bg={T.greenL}/>
+            <SBox label="Latest Weight" value={`${weightVals.filter(Boolean).slice(-1)[0]} ${profile.units==="metric"?"kg":"lbs"}`} color={T.blue} bg={T.blueL}/>
+            <SBox label="Goal Weight" value={`${num(profile.goalWeight)||"–"} ${profile.units==="metric"?"kg":"lbs"}`} color={T.green} bg={T.greenL}/>
             {weightVals.filter(Boolean).length>=2 && (
-              <SBox label="Change" value={`${(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0]).toFixed(1)} lbs`}
+              <SBox label="Change" value={`${parseFloat((weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0]).toFixed(2))} lbs`}
                 color={(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0])<=0?T.green:T.red}
                 bg={(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0])<=0?T.greenL:T.redL}/>
             )}
@@ -893,18 +901,19 @@ function BodyTab({ data, setData, profile, onCelebrate }) {
       {/* Measurements */}
       <div style={s.card}>
         <SHead icon="📏" label="MEASUREMENTS" color={T.purple} right={prevKey&&<span style={{ fontSize:10, color:T.muted }}>vs {dayLabel(prevKey,true)}</span>}/>
-        <div style={{ padding:"12px 16px 16px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        <div style={{ padding:"12px 16px 16px", display:"grid", gridTemplateColumns:"repeat(2, minmax(0,1fr))", gap:10 }}>
           {MEASUREMENTS.map(m=>{
             const prev=prevM?num(prevM[m.id]):null;
             const curr=num(cur[m.id]);
-            const diff=prev&&curr?(curr-prev).toFixed(1):null;
+            const diff=prev&&curr?(curr-prev).toFixed(2):null;
+            const unit = profile.units==="metric" ? "cm" : "in";
             return (
-              <div key={m.id} style={{ padding:"10px", background:T.card2, borderRadius:12, border:`1px solid ${T.border}` }}>
+              <div key={m.id} style={{ padding:"10px", background:T.card2, borderRadius:12, border:`1px solid ${T.border}`, minWidth:0 }}>
                 <div style={{ ...s.row, justifyContent:"space-between", marginBottom:6 }}>
-                  <div style={s.lbl}>{m.label}</div>
-                  {diff!==null && <span style={{ fontSize:9, fontWeight:800, color:num(diff)<0?T.green:num(diff)>0?T.red:T.muted }}>{num(diff)>0?"+":""}{diff}"</span>}
+                  <div style={{ ...s.lbl, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{m.label}</div>
+                  {diff!==null && <span style={{ fontSize:9, fontWeight:800, flexShrink:0, marginLeft:4, color:num(diff)<0?T.green:num(diff)>0?T.red:T.muted }}>{num(diff)>0?"+":""}{diff}{unit}</span>}
                 </div>
-                <Inp value={cur[m.id]||""} onChange={e=>setM(m.id,e.target.value)} placeholder="0.0" unit="in"/>
+                <Inp value={cur[m.id]||""} onChange={e=>setM(m.id,e.target.value)} placeholder="0.0" unit={unit}/>
               </div>
             );
           })}
@@ -1045,9 +1054,9 @@ function ProgressTab({ data, setData, profile }) {
             </div>
           </div>
           <div style={{ padding:"12px 16px 14px" }}>
-            <div style={{ ...s.lbl, marginBottom:8 }}>LAST 28 DAYS (OLDEST → NEWEST, LEFT → RIGHT)</div>
+            <div style={{ ...s.lbl, marginBottom:8 }}>LAST 28 DAYS (NEWEST → OLDEST, LEFT → RIGHT)</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5, direction:"ltr" }}>
-              {bubbleKeys.map((k)=>{
+              {[...bubbleKeys].reverse().map((k)=>{
                 const b = getDayBubble(k);
                 const isToday = k===today;
                 const bgColor = !b.hasAny ? "#EEEBE6" : b.inDeficit ? T.greenL : b.overCal ? T.redL : T.yellowL;
@@ -1102,7 +1111,7 @@ function ProgressTab({ data, setData, profile }) {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
               <SBox label="Starting" value={startW||"–"} sub="lbs"/>
               <SBox label="Goal" value={goalW||"–"} sub="lbs" color={T.green} bg={T.greenL}/>
-              <SBox label="To Lose" value={startW-goalW>0?startW-goalW:"–"} sub="lbs" color={T.accent} bg={T.accentL}/>
+              <SBox label="To Lose" value={startW-goalW>0?parseFloat((startW-goalW).toFixed(2)):"–"} sub="lbs" color={T.accent} bg={T.accentL}/>
             </div>
             <div style={{ ...s.row, justifyContent:"space-between", marginBottom:6 }}>
               <div style={s.lbl}>DEFICIT PROGRESS TO GOAL</div>
@@ -1112,7 +1121,7 @@ function ProgressTab({ data, setData, profile }) {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:14 }}>
               <SBox label={cumDef>=0?"7-Day Deficit":"7-Day Surplus"} value={fmtInt(Math.abs(Math.round(cumDef)))} sub="kcal net" color={cumDef>=0?T.green:T.red} bg={cumDef>=0?T.greenL:T.redL}/>
               <SBox label="Remaining to Goal" value={fmtInt(Math.round(calRemaining))} sub="kcal to burn/cut" color={T.yellow} bg={T.yellowL}/>
-              <SBox label="Est. Lost (7d)" value={cumDef!==0?`${cumDef<0?"-":""}${Math.abs(cumDef/3500).toFixed(2)} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL} big/>
+              <SBox label="Est. Lost (7d)" value={cumDef!==0?`${cumDef<0?"-":""}${parseFloat(Math.abs(cumDef/3500).toFixed(2))} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL} big/>
               <SBox label="Daily Target" value={fmtInt(profile.deficitGoal)} sub="kcal deficit/day"/>
             </div>
           </div>
@@ -1313,7 +1322,7 @@ function ProgressTab({ data, setData, profile }) {
               <SBox label="Workouts" value={`${workoutDays}/7`} color={T.orange} bg={T.orangeL}/>
               <SBox label="Total Deficit" value={fmtInt(Math.round(cumDef))} sub="kcal" color={cumDef>=0?T.green:T.red} bg={cumDef>=0?T.greenL:T.redL}/>
               <SBox label="Avg Cal/Day" value={loggedDays>0?fmtInt(Math.round(rows.reduce((a,r)=>a+r.cal,0)/loggedDays)):"–"} sub="kcal"/>
-              <SBox label="Est. Lost" value={cumDef!==0?`${cumDef<0?"-":""}${Math.abs(cumDef/3500).toFixed(2)} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL}/>
+              <SBox label="Est. Lost" value={cumDef!==0?`${cumDef<0?"-":""}${parseFloat(Math.abs(cumDef/3500).toFixed(2))} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL}/>
             </div>
           </div>
 
