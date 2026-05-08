@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#E05A2B"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-title" content="My Tracker"/>
+  <title>My Tracker</title>
+  <link rel="manifest" href="./manifest.json"/>
+  <style>
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+    html,body{margin:0;padding:0;background:#F4F1ED;font-family:-apple-system,'DM Sans','Helvetica Neue',sans-serif;}
+    #root{min-height:100vh;}
+    body{overscroll-behavior-y:contain;}
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button{opacity:1;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="react">
+const {useState,useEffect}=React;
+
+// ── localStorage ──────────────────────────────────────────────────────────────
+const _SK="my-tracker-v1";
+function _loadData(){try{return JSON.parse(localStorage.getItem(_SK)||"null");}catch{return null;}}
+function _saveData(obj){try{localStorage.setItem(_SK,JSON.stringify(obj));}catch(e){console.error(e);}}
+
+// ── Backup helpers ────────────────────────────────────────────────────────────
+function downloadBackup(data,profile){
+  const json=JSON.stringify({data,profile,exportedAt:new Date().toISOString()},null,2);
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([json],{type:"application/json"}));
+  a.download="my-tracker-backup-"+new Date().toISOString().split("T")[0]+".json";
+  a.click();
+}
+function restoreBackup(file,setData,setProfile){
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const p=JSON.parse(e.target.result);
+      if(p.data)setData(p.data);
+      if(p.profile)setProfile(p.profile);
+      alert("✅ Restored successfully!");
+    }catch{alert("❌ Invalid backup file.");}
+  };
+  r.readAsText(file);
+}
+
+// SK handled by shell
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function todayKey() { return new Date().toISOString().split("T")[0]; }
+function nDaysKeys(n) {
+  const days = [], base = new Date();
+  for (let i = n - 1; i >= 0; i--) { const d = new Date(base); d.setDate(base.getDate() - i); days.push(d.toISOString().split("T")[0]); }
+  return days;
+}
+function weekKeys() { return nDaysKeys(7); }
+function num(v) { return Number(v) || 0; }
+function fmtInt(v) { return (!v || isNaN(v)) ? "–" : Math.round(Number(v)).toLocaleString(); }
+function fmtDec(v, d = 1) { return (!v || isNaN(v)) ? "–" : Number(v).toFixed(d); }
+function dayLabel(k, short = false) {
+  if (k === todayKey()) return "Today";
+  const d = new Date(k + "T00:00");
+  return short ? d.toLocaleDateString("en-US", { weekday: "short" })
+    : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+function calcTDEE(wLbs, hCm, age, sex, bf, activity) {
+  const lean = (wLbs * 0.453592) * (1 - bf / 100);
+  const bmr = 370 + 21.6 * lean;
+  const m = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, veryActive: 1.9 };
+  return Math.round(bmr * (m[activity] || 1.375));
+}
+function stepCals(steps, wLbs) {
+  return Math.round(3.5 * (wLbs * 0.453592) * (steps / 100 / 60));
+}
+function calcStreak(data) {
+  let streak = 0;
+  const base = new Date();
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(base); d.setDate(base.getDate() - i);
+    const k = d.toISOString().split("T")[0];
+    const nutr = data.nutrition?.[k] || {};
+    const hasN = num(nutr.protein) > 0 || num(nutr.carbs) > 0;
+    const hasW = Object.values(data.workouts?.[k] || {}).some(l => l?.length > 0);
+    if (hasN || hasW) streak++;
+    else if (i > 0) break;
+  }
+  return streak;
+}
+
+const MACRO_CALS = { protein: 4, carbs: 4, fat: 9 };
+const ACTIVITY_LABELS = {
+  sedentary: "Sedentary (desk job)",
+  light: "Light (1–3x/week)",
+  moderate: "Moderate (3–5x/week)",
+  active: "Active (6–7x/week)",
+  veryActive: "Very Active (2x/day)",
+};
+const WORKOUT_CATS = [
+  { id: "lifting", label: "Lifting", icon: "🏋️", color: "#E05A2B" },
+  { id: "rehab", label: "Rehab", icon: "🦵", color: "#2563EB" },
+  { id: "athleticism", label: "Athleticism", icon: "⚡", color: "#7C3AED" },
+];
+const EXERCISE_LISTS = {
+  lifting: ["Squat","Bench Press","Deadlift","Overhead Press","Barbell Row","Pull Up","Dip","Lunge","Romanian Deadlift","Leg Press","Leg Curl","Leg Extension","Incline Press","Lat Pulldown","Cable Fly"],
+  rehab: ["Terminal Knee Extension","Wall Sit","Step Down","Single Leg Press","Clamshell","Hip Abduction","Glute Bridge","Quad Set","Hamstring Curl","Calf Raise","VMO Squat","Hip Flexor Stretch","Straight Leg Raise","Short Arc Quad"],
+  athleticism: ["Box Jump","Broad Jump","Sprint","Depth Jump","Single Leg Hop","Lateral Bound","Med Ball Throw","Agility Ladder","Hurdle Hop","Jump Squat","Skater Jump","Vertical Jump"],
+};
+const MEASUREMENTS = [
+  { id: "waist", label: "Waist" }, { id: "chest", label: "Chest" },
+  { id: "hips", label: "Hips" }, { id: "leftArm", label: "Left Arm" },
+  { id: "rightArm", label: "Right Arm" }, { id: "leftThigh", label: "Left Thigh" },
+  { id: "rightThigh", label: "Right Thigh" }, { id: "neck", label: "Neck" },
+];
+
+// ── Design tokens — LIGHT & BRIGHT ───────────────────────────────────────────
+const T = {
+  bg: "#F4F1ED",
+  card: "#FFFFFF",
+  card2: "#FAF8F5",
+  border: "#E6DFD8",
+  muted: "#A89B90",
+  text: "#1C1510",
+  sub: "#7A6F65",
+  green: "#16A34A", greenL: "#DCFCE7", greenM: "#86EFAC",
+  red: "#DC2626", redL: "#FEE2E2",
+  yellow: "#B45309", yellowL: "#FEF3C7",
+  blue: "#2563EB", blueL: "#DBEAFE",
+  purple: "#7C3AED", purpleL: "#EDE9FE",
+  orange: "#EA580C", orangeL: "#FFEDD5",
+  accent: "#E05A2B", accentL: "#FFF0EB",
+  teal: "#0D9488", tealL: "#CCFBF1",
+};
+
+const s = {
+  card: { background: T.card, borderRadius: 18, border: `1px solid ${T.border}`, overflow: "hidden", boxShadow: "0 1px 6px rgba(0,0,0,0.06)" },
+  row: { display: "flex", alignItems: "center" },
+  col: { display: "flex", flexDirection: "column" },
+  lbl: { fontSize: 9, fontWeight: 800, letterSpacing: "0.13em", color: T.muted, textTransform: "uppercase" },
+};
+
+// ── Celebration overlay ───────────────────────────────────────────────────────
+function Celebration({ message, onClose }) {
+  const [vis, setVis] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => { setVis(false); setTimeout(onClose, 350); }, 2600);
+    return () => clearTimeout(t);
+  }, []);
+  const emojis = ["🎉","✨","💪","🔥","⭐","🏆","🎯","👏","💯","🙌"];
+  const particles = Array.from({ length: 20 }, (_, i) => ({
+    e: emojis[i % emojis.length],
+    left: `${4 + (i * 4.8) % 90}%`,
+    delay: `${(i * 0.08).toFixed(2)}s`,
+    dur: `${0.85 + (i % 5) * 0.18}s`,
+  }));
+  return (
+    <div onClick={() => { setVis(false); setTimeout(onClose, 350); }} style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "rgba(244,241,237,0.85)", backdropFilter: "blur(8px)",
+      opacity: vis ? 1 : 0, transition: "opacity 0.35s",
+    }}>
+      <style>{`
+        @keyframes floatUp{0%{transform:translateY(0) scale(1);opacity:1}100%{transform:translateY(-130px) scale(1.4);opacity:0}}
+        @keyframes popIn{0%{transform:scale(0.4);opacity:0}65%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
+      `}</style>
+      {particles.map((p, i) => (
+        <div key={i} style={{ position:"absolute", bottom:"28%", left:p.left, fontSize:20, animation:`floatUp ${p.dur} ${p.delay} ease-out forwards`, pointerEvents:"none" }}>{p.e}</div>
+      ))}
+      <div style={{ background:T.card, borderRadius:24, padding:"32px 44px", textAlign:"center", boxShadow:"0 12px 48px rgba(0,0,0,0.15)", border:`2px solid ${T.border}`, animation:"popIn 0.38s ease forwards" }}>
+        <div style={{ fontSize:54, marginBottom:10 }}>🏆</div>
+        <div style={{ fontSize:20, fontWeight:900, color:T.text, marginBottom:6 }}>{message}</div>
+        <div style={{ fontSize:12, color:T.muted }}>Tap anywhere to continue</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Primitives ────────────────────────────────────────────────────────────────
+function Inp({ label, value, onChange, placeholder, type="number", unit, style, disabled }) {
+  return (
+    <div style={{ ...s.col, gap:4, ...style }}>
+      {label && <div style={s.lbl}>{label}</div>}
+      <div style={{ ...s.row, gap:6, background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:11, padding:"9px 12px", opacity:disabled?0.45:1 }}>
+        <input type={type} value={value} onChange={onChange} placeholder={placeholder||"0"} disabled={disabled}
+          style={{ flex:1, background:"none", border:"none", outline:"none", color:T.text, fontSize:14, fontFamily:"inherit", minWidth:0 }} />
+        {unit && <span style={{ fontSize:11, color:T.muted, flexShrink:0 }}>{unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SBox({ label, value, sub, color, bg, big }) {
+  return (
+    <div style={{ ...s.col, gap:2, padding:"11px 12px", background:bg||T.card2, borderRadius:13, border:`1px solid ${T.border}` }}>
+      <div style={s.lbl}>{label}</div>
+      <div style={{ fontSize:big?23:17, fontWeight:900, color:color||T.text, lineHeight:1.1 }}>{value}</div>
+      {sub && <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Bar({ pct, color, height=7, bg }) {
+  return (
+    <div style={{ height, background:bg||T.border, borderRadius:99, overflow:"hidden" }}>
+      <div style={{ height, borderRadius:99, background:color||T.green, width:`${Math.min(100,Math.max(0,pct||0))}%`, transition:"width 0.4s ease" }} />
+    </div>
+  );
+}
+
+function SHead({ icon, label, color, right }) {
+  return (
+    <div style={{ ...s.row, justifyContent:"space-between", padding:"13px 16px 11px", borderBottom:`1px solid ${T.border}` }}>
+      <div style={s.row}>
+        <span style={{ fontSize:15, marginRight:8 }}>{icon}</span>
+        <span style={{ fontSize:10, fontWeight:800, letterSpacing:"0.12em", color:color||T.accent }}>{label}</span>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function DoneBtn({ label, onDone, isDone }) {
+  return (
+    <button onClick={isDone ? undefined : onDone} style={{
+      width:"100%", padding:"15px", borderRadius:16,
+      border:`2px solid ${isDone ? T.green : T.accent}`,
+      background: isDone ? T.greenL : T.accent,
+      color: isDone ? T.green : "#fff",
+      fontWeight:900, fontSize:15, cursor: isDone ? "default" : "pointer",
+      fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:10,
+      transition:"all 0.2s", boxShadow: isDone ? "none" : "0 4px 16px rgba(224,90,43,0.28)",
+    }}>
+      <span style={{ fontSize:20 }}>{isDone ? "✅" : "🎯"}</span>
+      {isDone ? `${label} logged — great work!` : `Mark ${label} complete`}
+    </button>
+  );
+}
+
+// ── WEIGHT / BODY CHART ───────────────────────────────────────────────────────
+function LineChart({ keys, values, color, goalValue, unit="lbs", height=130 }) {
+  const valid = values.filter(Boolean);
+  if (valid.length < 2) return (
+    <div style={{ padding:"20px 16px", textAlign:"center", color:T.muted, fontSize:12 }}>
+      Log at least 2 days to see your chart.
+    </div>
+  );
+  const minV = Math.min(...valid) - 1, maxV = Math.max(...valid) + 1, range = maxV - minV || 1;
+  const W=400, H=height, PAD={t:12,r:12,b:22,l:40};
+  const gW=W-PAD.l-PAD.r, gH=H-PAD.t-PAD.b;
+  const toX = i => PAD.l + (i/(keys.length-1))*gW;
+  const toY = v => PAD.t + (1-(v-minV)/range)*gH;
+  const pts = keys.map((k,i)=>({i,w:values[i]})).filter(p=>p.w!==null);
+  const linePts = pts.map(p=>`${toX(p.i)},${toY(p.w)}`).join(" ");
+  const areaPts = `${toX(pts[0].i)},${PAD.t+gH} ${pts.map(p=>`${toX(p.i)},${toY(p.w)}`).join(" ")} ${toX(pts[pts.length-1].i)},${PAD.t+gH}`;
+  const goalY = goalValue ? toY(goalValue) : null;
+  const yTicks = Array.from({length:5},(_,i)=>minV+(range/4)*i);
+  const xIdxs = [0,Math.floor(keys.length/3),Math.floor(2*keys.length/3),keys.length-1];
+  return (
+    <div style={{ padding:"8px 4px 4px" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", overflow:"visible" }}>
+        {yTicks.map((t,i)=>(
+          <g key={i}>
+            <line x1={PAD.l} y1={toY(t)} x2={PAD.l+gW} y2={toY(t)} stroke={T.border} strokeWidth="1"/>
+            <text x={PAD.l-4} y={toY(t)+3} textAnchor="end" fontSize="8" fill={T.muted}>{t.toFixed(0)}</text>
+          </g>
+        ))}
+        {goalY && goalValue>=minV && goalValue<=maxV && (
+          <g>
+            <line x1={PAD.l} y1={goalY} x2={PAD.l+gW} y2={goalY} stroke={T.green} strokeWidth="1.5" strokeDasharray="5 3"/>
+            <text x={PAD.l+4} y={goalY-4} fontSize="8" fill={T.green} fontWeight="700">GOAL</text>
+          </g>
+        )}
+        <polygon points={areaPts} fill={color} fillOpacity="0.08"/>
+        <polyline points={linePts} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
+        {pts.map((p,i)=>(
+          <circle key={i} cx={toX(p.i)} cy={toY(p.w)} r="3.5" fill={color} stroke={T.card} strokeWidth="2"/>
+        ))}
+        {xIdxs.map(i=>(
+          <text key={i} x={toX(i)} y={H-4} textAnchor="middle" fontSize="8" fill={T.muted}>{dayLabel(keys[i],true)}</text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// ── JOURNAL ───────────────────────────────────────────────────────────────────
+function JournalSection({ data, setData }) {
+  const today = todayKey();
+  const [date, setDate] = useState(today);
+  const [expanded, setExpanded] = useState(false);
+  const getNote = k => data.journal?.[k] || "";
+  const setNote = (k, v) => setData(prev => ({ ...prev, journal: { ...prev.journal, [k]: v } }));
+  const recentWithNotes = nDaysKeys(14).filter(k => data.journal?.[k]).reverse();
+
+  return (
+    <div style={s.card}>
+      <div onClick={() => setExpanded(e=>!e)} style={{ ...s.row, justifyContent:"space-between", padding:"13px 16px 11px", cursor:"pointer" }}>
+        <div style={s.row}>
+          <span style={{ fontSize:15, marginRight:8 }}>📓</span>
+          <span style={{ fontSize:10, fontWeight:800, letterSpacing:"0.12em", color:T.teal }}>DAILY JOURNAL</span>
+        </div>
+        <span style={{ color:T.muted, fontSize:16, transition:"transform 0.2s", display:"inline-block", transform: expanded?"rotate(180deg)":"rotate(0deg)" }}>⌄</span>
+      </div>
+      {expanded && (
+        <div style={{ borderTop:`1px solid ${T.border}`, padding:"14px 16px 16px", ...s.col, gap:12 }}>
+          <div style={{ ...s.row, gap:10 }}>
+            <Inp label="Entry date" value={date} onChange={e=>setDate(e.target.value)} type="date" style={{ flex:1 }} />
+            <button onClick={()=>setDate(today)} style={{ marginTop:14, padding:"9px 12px", borderRadius:10, border:`1px solid ${T.border}`, background:T.bg, color:T.sub, fontSize:11, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}>Today</button>
+          </div>
+          <div>
+            <div style={{ ...s.lbl, marginBottom:6 }}>HOW DID TODAY GO?</div>
+            <textarea value={getNote(date)} onChange={e=>setNote(date,e.target.value)}
+              placeholder="How are you feeling? Any wins, struggles, reflections..."
+              style={{ width:"100%", boxSizing:"border-box", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:12, padding:"12px 14px", color:T.text, fontSize:13, resize:"none", minHeight:100, outline:"none", fontFamily:"inherit", lineHeight:1.6 }} />
+          </div>
+          {recentWithNotes.length > 0 && (
+            <div>
+              <div style={{ ...s.lbl, marginBottom:8 }}>RECENT ENTRIES</div>
+              <div style={{ ...s.col, gap:8 }}>
+                {recentWithNotes.slice(0,5).map(k=>(
+                  <div key={k} onClick={()=>setDate(k)} style={{ padding:"10px 12px", background:k===date?T.tealL:T.card2, borderRadius:10, border:`1px solid ${k===date?T.teal+"55":T.border}`, cursor:"pointer" }}>
+                    <div style={{ fontSize:10, fontWeight:800, color:k===date?T.teal:T.muted, marginBottom:4 }}>{dayLabel(k).toUpperCase()}</div>
+                    <div style={{ fontSize:12, color:T.sub, lineHeight:1.5, overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>{data.journal[k]}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── COPY / EXPORT SUMMARY ─────────────────────────────────────────────────────
+function CopyExport({ data, profile }) {
+  const [copied, setCopied] = useState(false);
+  const today = todayKey();
+  const week = weekKeys();
+
+  function buildSummary() {
+    const targetCal = profile.tdee - num(profile.deficitGoal);
+    const mg = profile.macroGoals || { protein: Math.round(targetCal*0.3/4), carbs: Math.round(targetCal*0.4/4), fat: Math.round(targetCal*0.3/9) };
+    const lines = [];
+    lines.push(`📊 WEEKLY SUMMARY — ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}`);
+    lines.push(`Goal: ${profile.currentWeight}lbs → ${profile.goalWeight}lbs | TDEE: ${profile.tdee} kcal | Target: ${targetCal} kcal/day`);
+    lines.push("");
+    lines.push("DAY          CAL    PROTEIN  STEPS    WEIGHT  DEFICIT");
+    lines.push("─".repeat(55));
+    let totalDef = 0;
+    week.forEach(k=>{
+      const d = data.nutrition?.[k]||{};
+      const p=num(d.protein),c=num(d.carbs),f=num(d.fat),w=num(d.weight);
+      const cal=p*4+c*4+f*9;
+      const steps=num(data.activity?.[k]?.steps);
+      const sCal=steps>0?stepCals(steps,num(profile.currentWeight)):0;
+      const def=cal>0?(profile.tdee-cal+sCal):sCal;
+      totalDef+=def;
+      const label=(k===today?"Today":new Date(k+"T00:00").toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"})).padEnd(12);
+      const calStr=(cal>0?cal.toString():"–").padEnd(7);
+      const protStr=(p>0?`${p}g`:"–").padEnd(9);
+      const stepStr=(steps>0?steps.toLocaleString():"–").padEnd(9);
+      const wStr=(w>0?`${w}lbs`:"–").padEnd(8);
+      const defStr=def!==0?`${def>0?"+":""}${Math.round(def)}`:"–";
+      lines.push(`${label}${calStr}${protStr}${stepStr}${wStr}${defStr}`);
+    });
+    lines.push("─".repeat(55));
+    lines.push(`Weekly deficit: ${Math.round(totalDef)} kcal | Est. lost: ${(totalDef/3500).toFixed(2)} lbs`);
+    const streak = calcStreak(data);
+    lines.push(`Streak: ${streak} days 🔥`);
+    // workouts
+    const workoutDays = week.filter(k=>Object.values(data.workouts?.[k]||{}).some(l=>l?.length>0));
+    if(workoutDays.length>0){
+      lines.push("");
+      lines.push("🏋️ WORKOUTS THIS WEEK");
+      workoutDays.forEach(k=>{
+        const label=k===today?"Today":new Date(k+"T00:00").toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"});
+        lines.push(`  ${label}:`);
+        WORKOUT_CATS.forEach(cat=>{
+          const exList=data.workouts?.[k]?.[cat.id]||[];
+          if(exList.length>0){
+            lines.push(`    ${cat.icon} ${cat.label}: ${exList.map(ex=>`${ex.name} (${ex.sets.length} sets)`).join(", ")}`);
+          }
+        });
+      });
+    }
+    return lines.join("
+");
+  }
+
+  function copyToClipboard() {
+    const text = buildSummary();
+    if(navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2500); });
+    } else {
+      // fallback
+      const el = document.createElement("textarea");
+      el.value = text; document.body.appendChild(el); el.select();
+      document.execCommand("copy"); document.body.removeChild(el);
+      setCopied(true); setTimeout(()=>setCopied(false),2500);
+    }
+  }
+
+  return (
+    <div style={{ ...s.card, border:`1.5px solid ${copied?T.green:T.border}` }}>
+      <SHead icon="📤" label="EXPORT SUMMARY" color={T.teal}/>
+      <div style={{ padding:"14px 16px 16px", ...s.col, gap:10 }}>
+        <div style={{ fontSize:12, color:T.sub, lineHeight:1.5 }}>
+          Copy a plain-text weekly summary — calories, protein, steps, weight, deficit, and workouts — ready to paste anywhere.
+        </div>
+        <button onClick={copyToClipboard} style={{
+          padding:"13px 16px", borderRadius:13, border:"none",
+          background: copied ? T.greenL : T.teal,
+          color: copied ? T.green : "#fff",
+          fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit",
+          display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+          transition:"all 0.2s", boxShadow: copied?"none":"0 3px 12px rgba(13,148,136,0.3)",
+        }}>
+          <span style={{ fontSize:18 }}>{copied?"✅":"📋"}</span>
+          {copied ? "Copied to clipboard!" : "Copy Weekly Summary"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Setup({ profile, setProfile, onDone }) {
+  const [p, setP] = useState(profile || { currentWeight:"", goalWeight:"", heightCm:"", age:"", sex:"male", bf:"", activity:"moderate", deficitGoal:500, macroGoals:null });
+  const [sub, setSub] = useState("basics");
+  const set = (k,v) => setP(prev=>({...prev,[k]:v}));
+
+  const tdee = (p.currentWeight&&p.heightCm&&p.age&&p.bf) ? calcTDEE(num(p.currentWeight),num(p.heightCm),num(p.age),p.sex,num(p.bf),p.activity) : null;
+  const targetCal = tdee ? tdee - num(p.deficitGoal) : null;
+  const autoMacros = targetCal ? { protein:Math.round(targetCal*0.3/4), carbs:Math.round(targetCal*0.4/4), fat:Math.round(targetCal*0.3/9) } : { protein:"", carbs:"", fat:"" };
+  const mg = p.macroGoals || autoMacros;
+
+  function save() {
+    if (!p.currentWeight||!p.goalWeight) return alert("Enter current and goal weight.");
+    setProfile({ ...p, tdee:tdee||2200, macroGoals:mg });
+    onDone();
+  }
+
+  const subTabs = [{id:"basics",label:"📐 Body"},{id:"goals",label:"🎯 Goals"},{id:"macros",label:"🥗 Macros"}];
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'DM Sans','Helvetica Neue',sans-serif", paddingBottom:40 }}>
+      <div style={{ maxWidth:480, margin:"0 auto", padding:"36px 18px 0" }}>
+        <div style={{ fontSize:9, letterSpacing:"0.18em", color:T.muted, marginBottom:4 }}>PROFILE & GOALS</div>
+        <h1 style={{ fontSize:26, fontWeight:900, margin:"0 0 20px", color:T.accent }}>Your Setup</h1>
+        <div style={{ ...s.row, gap:4, background:T.card, borderRadius:14, padding:4, marginBottom:18, border:`1px solid ${T.border}` }}>
+          {subTabs.map(t=>(
+            <button key={t.id} onClick={()=>setSub(t.id)} style={{ flex:1, padding:"8px 4px", borderRadius:11, border:"none", fontSize:11, fontWeight:700, background:sub===t.id?T.accent:"transparent", color:sub===t.id?"#fff":T.muted, cursor:"pointer" }}>{t.label}</button>
+          ))}
+        </div>
+        <div style={{ ...s.col, gap:14 }}>
+          {sub==="basics" && <>
+            <div style={s.card}>
+              <SHead icon="⚖️" label="WEIGHT"/>
+              <div style={{ padding:16, display:"flex", flexDirection:"column", gap:12 }}>
+                <Inp label="Current Weight" value={p.currentWeight} onChange={e=>set("currentWeight",e.target.value)} unit="lbs"/>
+                <Inp label="Goal Weight" value={p.goalWeight} onChange={e=>set("goalWeight",e.target.value)} unit="lbs"/>
+              </div>
+            </div>
+            <div style={s.card}>
+              <SHead icon="📐" label="BODY STATS"/>
+              <div style={{ padding:16, display:"flex", flexDirection:"column", gap:12 }}>
+                <Inp label="Height" value={p.heightCm} onChange={e=>set("heightCm",e.target.value)} unit="cm"/>
+                <Inp label="Age" value={p.age} onChange={e=>set("age",e.target.value)} unit="yrs"/>
+                <Inp label="Body Fat %" value={p.bf} onChange={e=>set("bf",e.target.value)} unit="%"/>
+                <div style={s.col}>
+                  <div style={{ ...s.lbl, marginBottom:6 }}>Sex</div>
+                  <div style={{ ...s.row, gap:10 }}>
+                    {["male","female"].map(sx=>(
+                      <button key={sx} onClick={()=>set("sex",sx)} style={{ flex:1, padding:"12px 0", borderRadius:12, border:`2px solid ${p.sex===sx?T.accent:T.border}`, background:p.sex===sx?T.accentL:T.bg, color:p.sex===sx?T.accent:T.muted, fontWeight:800, fontSize:14, cursor:"pointer", textTransform:"capitalize", fontFamily:"inherit" }}>{sx}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={s.card}>
+              <SHead icon="🏃" label="ACTIVITY LEVEL"/>
+              <div style={{ padding:"10px 16px 14px", ...s.col, gap:6 }}>
+                {Object.entries(ACTIVITY_LABELS).map(([k,v])=>(
+                  <button key={k} onClick={()=>set("activity",k)} style={{ padding:"10px 14px", borderRadius:11, border:`1.5px solid ${p.activity===k?T.accent:T.border}`, background:p.activity===k?T.accentL:T.bg, color:p.activity===k?T.accent:T.sub, textAlign:"left", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:p.activity===k?700:400 }}>{v}</button>
+                ))}
+              </div>
+            </div>
+          </>}
+          {sub==="goals" && <>
+            <div style={s.card}>
+              <SHead icon="🎯" label="CALORIE DEFICIT"/>
+              <div style={{ padding:16, ...s.col, gap:12 }}>
+                <Inp label="Daily deficit goal" value={p.deficitGoal} onChange={e=>set("deficitGoal",e.target.value)} unit="kcal/day"/>
+                <div style={{ fontSize:11, color:T.yellow, padding:"8px 12px", background:T.yellowL, borderRadius:10 }}>💡 500 kcal/day ≈ ~1 lb/week loss</div>
+                {tdee && (
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    <SBox label="Your TDEE" value={`${fmtInt(tdee)} kcal`} color={T.accent} bg={T.accentL}/>
+                    <SBox label="Eat Per Day" value={`${fmtInt(targetCal)} kcal`} color={T.green} bg={T.greenL}/>
+                    <SBox label="Total to Cut" value={`${fmtInt(Math.round((num(p.currentWeight)-num(p.goalWeight))*3500))} kcal`} color={T.yellow} bg={T.yellowL}/>
+                    <SBox label="Timeline" value={num(p.deficitGoal)>0?`${((num(p.currentWeight)-num(p.goalWeight))*3500/num(p.deficitGoal)/7).toFixed(1)} wks`:"–"} color={T.blue} bg={T.blueL}/>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>}
+          {sub==="macros" && <>
+            <div style={s.card}>
+              <SHead icon="🥗" label="MACRO GOALS" color={T.green} right={<span style={{ fontSize:10, color:T.muted }}>grams/day</span>}/>
+              <div style={{ padding:16, ...s.col, gap:12 }}>
+                {targetCal && <div style={{ fontSize:11, color:T.yellow, padding:"8px 12px", background:T.yellowL, borderRadius:10 }}>Auto-set from {fmtInt(targetCal)} kcal target. Adjust freely.</div>}
+                {[{key:"protein",label:"Protein",color:T.red,bg:T.redL},{key:"carbs",label:"Carbs",color:T.yellow,bg:T.yellowL},{key:"fat",label:"Fat",color:T.purple,bg:T.purpleL}].map(({key,label,color,bg})=>(
+                  <div key={key} style={{ padding:"12px", background:bg, borderRadius:12 }}>
+                    <Inp label={label} value={mg[key]||""} unit="g" onChange={e=>setP(prev=>({...prev,macroGoals:{...mg,[key]:e.target.value}}))}/>
+                    <div style={{ fontSize:10, color, fontWeight:700, marginTop:4 }}>= {num(mg[key])*MACRO_CALS[key]} kcal</div>
+                  </div>
+                ))}
+                <div style={{ padding:"12px 14px", background:T.accentL, borderRadius:12, border:`1px solid ${T.accent}33` }}>
+                  <div style={s.lbl}>TOTAL MACRO CALORIES</div>
+                  <div style={{ fontSize:22, fontWeight:900, color:T.accent, marginTop:4 }}>{fmtInt(num(mg.protein)*4+num(mg.carbs)*4+num(mg.fat)*9)} kcal</div>
+                </div>
+              </div>
+            </div>
+          </>}
+          <button onClick={save} style={{ padding:"15px", borderRadius:14, border:"none", background:T.accent, color:"#fff", fontWeight:900, fontSize:15, cursor:"pointer", boxShadow:"0 4px 16px rgba(224,90,43,0.3)" }}>Save & Continue →</button>
+          {profile && <button onClick={onDone} style={{ padding:"12px", borderRadius:14, border:`1.5px solid ${T.border}`, background:"none", color:T.muted, fontWeight:700, fontSize:13, cursor:"pointer" }}>← Back</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── NUTRITION TAB ─────────────────────────────────────────────────────────────
+function NutritionTab({ data, setData, profile, onCelebrate }) {
+  const today = todayKey();
+  const [logDate, setLogDate] = useState(today);
+  const isToday = logDate === today;
+
+  const getDay = k => data.nutrition?.[k] || {};
+  const setField = (f,v) => {
+    setData(prev => ({
+      ...prev,
+      nutrition: { ...prev.nutrition, [logDate]: { ...(prev.nutrition?.[logDate]||{}), [f]: v } },
+      // reset done so user re-confirms after any edit
+      done: { ...prev.done, [logDate]: { ...prev.done?.[logDate], nutrition: false } },
+    }));
+  };
+  const d = getDay(logDate);
+  const p=num(d.protein), c=num(d.carbs), f=num(d.fat);
+  const totalCal = p*4 + c*4 + f*9;
+  const tdee=profile.tdee, deficit=num(profile.deficitGoal), targetCal=tdee-deficit;
+  const mg = profile.macroGoals||{protein:Math.round(targetCal*0.3/4),carbs:Math.round(targetCal*0.4/4),fat:Math.round(targetCal*0.3/9)};
+  const calDiff = totalCal-targetCal;
+  const steps = num(data.activity?.[logDate]?.steps);
+  const sCal = steps>0 ? stepCals(steps,num(profile.currentWeight)) : 0;
+  const netDef = totalCal>0 ? (tdee-totalCal+sCal) : 0;
+  const isDone = data.done?.[logDate]?.nutrition;
+  const markDone = () => { setData(prev=>({...prev,done:{...prev.done,[logDate]:{...prev.done?.[logDate],nutrition:true}}})); onCelebrate("Nutrition logged! 🥗"); };
+  const calRemaining = targetCal - totalCal;
+
+  return (
+    <div style={{ ...s.col, gap:14 }}>
+
+      {/* Date picker */}
+      <div style={{ ...s.row, gap:10 }}>
+        <Inp label="Logging for" value={logDate} onChange={e=>setLogDate(e.target.value)} type="date" style={{ flex:1 }}/>
+        {!isToday && (
+          <button onClick={()=>setLogDate(today)} style={{ marginTop:14, padding:"9px 14px", borderRadius:10, border:`1.5px solid ${T.accent}`, background:T.accentL, color:T.accent, fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}>Today</button>
+        )}
+      </div>
+      {!isToday && (
+        <div style={{ padding:"9px 14px", background:T.yellowL, borderRadius:10, border:`1px solid ${T.yellow}44`, fontSize:12, color:T.yellow, fontWeight:700 }}>
+          📅 Editing {new Date(logDate+"T00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}
+        </div>
+      )}
+
+      {/* Target strip */}
+      <div style={{ ...s.row, background:T.card, borderRadius:16, border:`1px solid ${T.border}`, overflow:"hidden", boxShadow:"0 1px 5px rgba(0,0,0,0.06)" }}>
+        {[{label:"TDEE",value:fmtInt(tdee),color:T.text},{label:"TARGET",value:fmtInt(targetCal),color:T.green},{label:"DEFICIT GOAL",value:fmtInt(deficit),color:T.accent}].map((item,i)=>(
+          <div key={i} style={{ flex:1, padding:"12px 8px", textAlign:"center", borderRight:i<2?`1px solid ${T.border}`:"none" }}>
+            <div style={s.lbl}>{item.label}</div>
+            <div style={{ fontSize:15, fontWeight:900, color:item.color, marginTop:3 }}>{item.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Live calorie countdown */}
+      {totalCal > 0 && (
+        <div style={{ padding:"14px 16px", background: calDiff>50?T.redL:calDiff<-50?T.greenL:T.yellowL, borderRadius:16, border:`1.5px solid ${calDiff>50?T.red+"44":calDiff<-50?T.green+"44":T.yellow+"44"}`, ...s.row, justifyContent:"space-between" }}>
+          <div>
+            <div style={s.lbl}>{calDiff>50?"OVER TARGET":calDiff<-50?"REMAINING":"ON TARGET 🎯"}</div>
+            <div style={{ fontSize:30, fontWeight:900, color:calDiff>50?T.red:calDiff<-50?T.green:T.yellow, lineHeight:1.1, marginTop:4 }}>
+              {calDiff>50?`+${fmtInt(calDiff)}`:calDiff<-50?fmtInt(Math.abs(calDiff)):"✓"} <span style={{ fontSize:13, fontWeight:400, color:T.muted }}>kcal</span>
+            </div>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={s.lbl}>CONSUMED</div>
+            <div style={{ fontSize:22, fontWeight:900, color:T.text, marginTop:4 }}>{fmtInt(totalCal)}</div>
+            <div style={{ fontSize:10, color:T.muted }}>of {fmtInt(targetCal)} target</div>
+          </div>
+        </div>
+      )}
+
+      {/* Macro inputs */}
+      <div style={s.card}>
+        <SHead icon="🥗" label="MACROS" color={T.green}/>
+        <div style={{ padding:"14px 16px 16px", ...s.col, gap:14 }}>
+          {[{key:"protein",label:"Protein",color:T.red,bg:T.redL,goalKey:"protein"},{key:"carbs",label:"Carbs",color:T.yellow,bg:T.yellowL,goalKey:"carbs"},{key:"fat",label:"Fat",color:T.purple,bg:T.purpleL,goalKey:"fat"}].map(({key,label,color,bg,goalKey})=>{
+            const val=num(d[key]), goal=num(mg[goalKey]), kcal=val*MACRO_CALS[key], pct=goal>0?(val/goal)*100:0;
+            return (
+              <div key={key} style={{ padding:"12px", background:pct>=95?bg:T.card2, borderRadius:13, border:`1px solid ${pct>=95?color+"44":T.border}`, transition:"all 0.2s" }}>
+                <div style={{ ...s.row, justifyContent:"space-between", marginBottom:8 }}>
+                  <Inp value={d[key]||""} onChange={e=>setField(key,e.target.value)} label={label} unit="g" style={{ flex:1, marginRight:12 }}/>
+                  <div style={{ ...s.col, alignItems:"flex-end", gap:2, paddingTop:13 }}>
+                    <span style={{ fontSize:15, fontWeight:900, color }}>{kcal>0?fmtInt(kcal):"–"} kcal</span>
+                    <span style={{ fontSize:9, color:T.muted }}>goal: {goal}g</span>
+                  </div>
+                </div>
+                <Bar pct={pct} color={color} height={6} bg={`${color}22`}/>
+                {pct>0 && <div style={{ fontSize:10, color, fontWeight:700, marginTop:4 }}>{Math.round(pct)}% of goal {pct>=100?"✓":""}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Morning weight */}
+      <div style={s.card}>
+        <SHead icon="⚖️" label="MORNING WEIGHT"/>
+        <div style={{ padding:"14px 16px 16px" }}>
+          <Inp label="Weight" value={d.weight||""} onChange={e=>setField("weight",e.target.value)} unit="lbs"/>
+        </div>
+        {sCal>0 && (
+          <div style={{ margin:"0 16px 14px", padding:"10px 14px", background:T.greenL, borderRadius:10, ...s.row, justifyContent:"space-between" }}>
+            <span style={{ fontSize:12, color:T.green, fontWeight:600 }}>🚶 ~{fmtInt(sCal)} kcal burned from steps</span>
+            {netDef>0 && <span style={{ fontSize:11, color:T.green, fontWeight:800 }}>+{fmtInt(netDef)} deficit</span>}
+          </div>
+        )}
+      </div>
+
+      <JournalSection data={data} setData={setData}/>
+      <DoneBtn label="Nutrition" onDone={markDone} isDone={isDone}/>
+    </div>
+  );
+}
+
+// ── WORKOUT TAB ───────────────────────────────────────────────────────────────
+function WorkoutTab({ data, setData, onCelebrate, profile }) {
+  const today = todayKey();
+  const [logDate, setLogDate] = useState(today);
+  const isToday = logDate === today;
+  const [cat, setCat] = useState("lifting");
+  const [adding, setAdding] = useState(false);
+  const [pick, setPick] = useState("");
+  const [custom, setCustom] = useState("");
+  const [historyDate, setHistoryDate] = useState(null);
+  const catObj = WORKOUT_CATS.find(c=>c.id===cat);
+  const color = catObj.color;
+  const isDone = data.done?.[logDate]?.workout;
+
+  const steps = num(data.activity?.[logDate]?.steps);
+  const sCal = steps>0 ? stepCals(steps, num(profile.currentWeight)) : 0;
+  const setSteps = val => setData(prev=>({...prev, activity:{...prev.activity,[logDate]:{...prev.activity?.[logDate],steps:val}}}));
+
+  const getList = (date=logDate) => data.workouts?.[date]?.[cat]||[];
+  const save = list => setData(prev=>({...prev,workouts:{...prev.workouts,[logDate]:{...prev.workouts?.[logDate],[cat]:list}}}));
+  const addEx = name => { if(!name.trim()) return; save([...getList(),{id:Date.now(),name:name.trim(),sets:[{reps:"",weight:""}],notes:""}]); setAdding(false);setPick("");setCustom(""); };
+  const updSet = (ei,si,field,val) => save(getList().map((ex,i)=>i!==ei?ex:{...ex,sets:ex.sets.map((s,j)=>j!==si?s:{...s,[field]:val})}));
+  const addSet = ei => save(getList().map((ex,i)=>i!==ei?ex:{...ex,sets:[...ex.sets,{reps:"",weight:""}]}));
+  const delSet = (ei,si) => save(getList().map((ex,i)=>i!==ei?ex:{...ex,sets:ex.sets.filter((_,j)=>j!==si)}));
+  const updNotes = (ei,val) => save(getList().map((ex,i)=>i!==ei?ex:{...ex,notes:val}));
+  const delEx = ei => save(getList().filter((_,i)=>i!==ei));
+  const markDone = () => { setData(prev=>({...prev,done:{...prev.done,[logDate]:{...prev.done?.[logDate],workout:true}}})); onCelebrate("Workout crushed! 💪"); };
+
+  const allDates = [...new Set(Object.keys(data.workouts||{}).filter(k=>Object.values(data.workouts[k]||{}).some(l=>l?.length>0)))].sort().reverse();
+
+  if (historyDate) return (
+    <div style={{ ...s.col, gap:12 }}>
+      <button onClick={()=>setHistoryDate(null)} style={{ ...s.row, gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"9px 14px", color:T.sub, fontSize:12, cursor:"pointer", alignSelf:"flex-start", fontFamily:"inherit" }}>← Back</button>
+      <div style={{ ...s.lbl, paddingLeft:2 }}>{dayLabel(historyDate)} — {historyDate}</div>
+      {WORKOUT_CATS.map(c=>{
+        const list=data.workouts?.[historyDate]?.[c.id]||[];
+        if(!list.length) return null;
+        return (
+          <div key={c.id} style={s.card}>
+            <SHead icon={c.icon} label={c.label.toUpperCase()} color={c.color}/>
+            <div style={{ padding:"12px 14px 14px" }}>
+              {list.map((ex,ei)=>(
+                <div key={ei} style={{ marginBottom:14 }}>
+                  <div style={{ fontSize:13, fontWeight:800, color:c.color, marginBottom:6 }}>{ex.name}</div>
+                  {ex.sets.map((set,si)=>(
+                    <div key={si} style={{ fontSize:12, color:T.sub, paddingLeft:8, marginBottom:3 }}>
+                      Set {si+1}: <span style={{ color:T.text, fontWeight:700 }}>{set.reps||"?"} reps</span> × <span style={{ color:T.text, fontWeight:700 }}>{set.weight||"?"} kg</span>
+                    </div>
+                  ))}
+                  {ex.notes && <div style={{ fontSize:11, color:T.muted, paddingLeft:8, marginTop:4 }}>📝 {ex.notes}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const list = getList();
+  return (
+    <div style={{ ...s.col, gap:12 }}>
+
+      {/* Date picker */}
+      <div style={{ ...s.row, gap:10 }}>
+        <Inp label="Logging for" value={logDate} onChange={e=>{ setLogDate(e.target.value); setAdding(false); }} type="date" style={{ flex:1 }}/>
+        {!isToday && (
+          <button onClick={()=>setLogDate(today)} style={{ marginTop:14, padding:"9px 14px", borderRadius:10, border:`1.5px solid ${T.accent}`, background:T.accentL, color:T.accent, fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}>Today</button>
+        )}
+      </div>
+      {!isToday && (
+        <div style={{ padding:"9px 14px", background:T.yellowL, borderRadius:10, border:`1px solid ${T.yellow}44`, fontSize:12, color:T.yellow, fontWeight:700 }}>
+          📅 Editing {new Date(logDate+"T00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}
+        </div>
+      )}
+
+      <div style={{ ...s.row, gap:8, flexWrap:"wrap" }}>
+        {WORKOUT_CATS.map(c=>(
+          <button key={c.id} onClick={()=>{setCat(c.id);setAdding(false);}} style={{ padding:"7px 14px", borderRadius:99, border:`1.5px solid ${cat===c.id?c.color:T.border}`, background:cat===c.id?`${c.color}18`:T.card, color:cat===c.id?c.color:T.muted, fontSize:12, fontWeight:700, cursor:"pointer" }}>{c.icon} {c.label}</button>
+        ))}
+        <button onClick={()=>setHistoryDate(allDates[0]||today)} style={{ marginLeft:"auto", padding:"7px 12px", borderRadius:99, border:`1px solid ${T.border}`, background:T.card, color:T.muted, fontSize:11, fontWeight:700, cursor:"pointer" }}>📋 History</button>
+      </div>
+
+      {list.map((ex,ei)=>(
+        <div key={ex.id} style={s.card}>
+          <div style={{ ...s.row, justifyContent:"space-between", padding:"12px 14px 10px", borderBottom:`1px solid ${T.border}` }}>
+            <span style={{ fontWeight:800, fontSize:14, color }}>{ex.name}</span>
+            <button onClick={()=>delEx(ei)} style={{ background:"none", border:"none", color:T.muted, fontSize:20, cursor:"pointer" }}>×</button>
+          </div>
+          <div style={{ padding:"10px 14px" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"28px 80px 90px 30px", gap:8, marginBottom:6 }}>
+              {["#","REPS","KG",""].map((h,i)=><div key={i} style={{ fontSize:9, color:T.muted, fontWeight:700, letterSpacing:"0.1em" }}>{h}</div>)}
+            </div>
+            {ex.sets.map((set,si)=>(
+              <div key={si} style={{ display:"grid", gridTemplateColumns:"28px 80px 90px 30px", gap:8, marginBottom:8, alignItems:"center" }}>
+                <div style={{ fontSize:14, fontWeight:800, color:T.muted, textAlign:"center" }}>{si+1}</div>
+                <input type="number" value={set.reps} onChange={e=>updSet(ei,si,"reps",e.target.value)} placeholder="0" style={{ background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:10, padding:"10px 8px", color:T.text, fontSize:16, fontWeight:700, outline:"none", fontFamily:"inherit", textAlign:"center", width:"100%" }}/>
+                <input type="number" value={set.weight} onChange={e=>updSet(ei,si,"weight",e.target.value)} placeholder="0" style={{ background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:10, padding:"10px 8px", color:T.text, fontSize:16, fontWeight:700, outline:"none", fontFamily:"inherit", textAlign:"center", width:"100%" }}/>
+                <button onClick={()=>delSet(ei,si)} style={{ background:"none", border:"none", color:T.muted, fontSize:18, cursor:"pointer", textAlign:"center" }}>×</button>
+              </div>
+            ))}
+            <button onClick={()=>addSet(ei)} style={{ width:"100%", padding:"7px", borderRadius:8, border:`1.5px dashed ${color}66`, background:`${color}08`, color, fontSize:11, fontWeight:700, cursor:"pointer", marginTop:2 }}>+ Add Set</button>
+            <div style={{ marginTop:10 }}>
+              <div style={{ ...s.lbl, marginBottom:4 }}>NOTES</div>
+              <textarea value={ex.notes} onChange={e=>updNotes(ei,e.target.value)} placeholder="How did it feel? Form notes..." style={{ width:"100%", boxSizing:"border-box", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:8, padding:"8px 10px", color:T.text, fontSize:12, resize:"none", minHeight:50, outline:"none", fontFamily:"inherit" }}/>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {adding ? (
+        <div style={s.card}>
+          <SHead icon={catObj.icon} label={`ADD ${cat.toUpperCase()} EXERCISE`} color={color}/>
+          <div style={{ padding:14 }}>
+            <div style={{ ...s.lbl, marginBottom:8 }}>QUICK SELECT</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
+              {EXERCISE_LISTS[cat].map(sg=>(
+                <button key={sg} onClick={()=>setPick(sg)} style={{ padding:"5px 10px", borderRadius:8, border:`1.5px solid ${pick===sg?color:T.border}`, background:pick===sg?`${color}18`:T.bg, color:pick===sg?color:T.sub, fontSize:11, cursor:"pointer", fontWeight:pick===sg?700:400 }}>{sg}</button>
+              ))}
+            </div>
+            <div style={{ ...s.lbl, marginBottom:6 }}>OR TYPE CUSTOM</div>
+            <input type="text" value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Exercise name..." style={{ width:"100%", boxSizing:"border-box", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:10, padding:"9px 12px", color:T.text, fontSize:13, outline:"none", fontFamily:"inherit", marginBottom:10 }}/>
+            <div style={{ ...s.row, gap:8 }}>
+              <button onClick={()=>addEx(custom||pick)} style={{ flex:1, padding:"11px", borderRadius:10, border:"none", background:color, color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer" }}>Add Exercise</button>
+              <button onClick={()=>{setAdding(false);setPick("");setCustom("");}} style={{ padding:"11px 16px", borderRadius:10, border:`1px solid ${T.border}`, background:"none", color:T.muted, fontSize:12, cursor:"pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <button onClick={()=>setAdding(true)} style={{ padding:"14px", borderRadius:14, border:`2px dashed ${color}55`, background:`${color}08`, color, fontSize:13, fontWeight:800, cursor:"pointer", width:"100%" }}>{catObj.icon} Add {catObj.label} Exercise</button>
+      )}
+
+      {allDates.length>0 && (
+        <div style={s.card}>
+          <SHead icon="📋" label="RECENT SESSIONS"/>
+          {allDates.slice(0,8).map(k=>{
+            const cats=WORKOUT_CATS.filter(c=>data.workouts?.[k]?.[c.id]?.length>0);
+            const total=cats.reduce((a,c)=>a+(data.workouts[k][c.id]?.length||0),0);
+            return (
+              <div key={k} onClick={()=>setHistoryDate(k)} style={{ ...s.row, justifyContent:"space-between", padding:"12px 16px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", background:k===logDate?T.accentL:"transparent" }}>
+                <div style={s.col}>
+                  <div style={{ fontSize:12, fontWeight:700, color:k===logDate?T.accent:T.text }}>{dayLabel(k)}</div>
+                  <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{cats.map(c=>`${c.icon} ${c.label}`).join(" · ")}</div>
+                </div>
+                <div style={{ ...s.row, gap:8 }}><span style={{ fontSize:11, color:T.muted }}>{total} exercises</span><span style={{ color:T.muted }}>›</span></div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Steps logging */}
+      <div style={s.card}>
+        <SHead icon="👣" label="STEPS" color={T.teal}/>
+        <div style={{ padding:"14px 16px 14px" }}>
+          <Inp label="Steps" value={data.activity?.[logDate]?.steps||""} onChange={e=>setSteps(e.target.value)} unit="steps"/>
+          {sCal>0 && (
+            <div style={{ marginTop:10, padding:"10px 14px", background:steps>=10000?T.greenL:T.yellowL, borderRadius:10, ...s.row, justifyContent:"space-between" }}>
+              <span style={{ fontSize:12, color:steps>=10000?T.green:T.yellow, fontWeight:700 }}>
+                {steps>=10000?"👟 Goal hit! ":"👣 "}{fmtInt(steps)} steps · ~{fmtInt(sCal)} kcal burned
+              </span>
+              {steps>=10000 && <span style={{ fontSize:16 }}>✓</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <JournalSection data={data} setData={setData}/>
+      <DoneBtn label="Activity" onDone={markDone} isDone={isDone}/>
+    </div>
+  );
+}
+
+// ── BODY TAB ──────────────────────────────────────────────────────────────────
+function BodyTab({ data, setData, profile, onCelebrate }) {
+  const today = todayKey();
+  const [viewDate, setViewDate] = useState(today);
+  const [chartRange, setChartRange] = useState(30);
+
+  const getM = k => data.measurements?.[k]||{};
+  const setM = (field,val) => setData(prev=>({...prev,measurements:{...prev.measurements,[viewDate]:{...getM(viewDate),[field]:val}}}));
+  const isDone = data.done?.[today]?.body;
+  const markDone = () => { setData(prev=>({...prev,done:{...prev.done,[today]:{...prev.done?.[today],body:true}}})); onCelebrate("Body logged! 📏"); };
+
+  // Weight chart data
+  const weightKeys = nDaysKeys(chartRange);
+  const weightVals = weightKeys.map(k=>num(data.nutrition?.[k]?.weight)||null);
+
+  const allKeys = Object.keys(data.measurements||{}).sort().reverse();
+  const prevKey = allKeys.find(k=>k<viewDate);
+  const prevM = prevKey ? getM(prevKey) : null;
+  const cur = getM(viewDate);
+
+  return (
+    <div style={{ ...s.col, gap:14 }}>
+      {/* Weight chart */}
+      <div style={s.card}>
+        <SHead icon="📉" label="WEIGHT TREND" color={T.blue}
+          right={
+            <div style={s.row}>
+              {[14,30,60].map(n=>(
+                <button key={n} onClick={()=>setChartRange(n)} style={{ marginLeft:4, padding:"3px 8px", borderRadius:8, border:`1px solid ${chartRange===n?T.blue:T.border}`, background:chartRange===n?T.blueL:"none", color:chartRange===n?T.blue:T.muted, fontSize:10, fontWeight:700, cursor:"pointer" }}>{n}d</button>
+              ))}
+            </div>
+          }/>
+        <LineChart keys={weightKeys} values={weightVals} color={T.blue} goalValue={num(profile.goalWeight)}/>
+        {/* Most recent weight */}
+        {weightVals.filter(Boolean).length > 0 && (
+          <div style={{ padding:"0 16px 14px", ...s.row, gap:16 }}>
+            <SBox label="Latest Weight" value={`${weightVals.filter(Boolean).slice(-1)[0]} lbs`} color={T.blue} bg={T.blueL}/>
+            <SBox label="Goal Weight" value={`${num(profile.goalWeight)||"–"} lbs`} color={T.green} bg={T.greenL}/>
+            {weightVals.filter(Boolean).length>=2 && (
+              <SBox label="Change" value={`${(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0]).toFixed(1)} lbs`}
+                color={(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0])<=0?T.green:T.red}
+                bg={(weightVals.filter(Boolean).slice(-1)[0]-weightVals.filter(Boolean)[0])<=0?T.greenL:T.redL}/>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Date selector */}
+      <div style={{ ...s.row, gap:10 }}>
+        <Inp label="Log date" value={viewDate} onChange={e=>setViewDate(e.target.value)} type="date" style={{ flex:1 }}/>
+        <button onClick={()=>setViewDate(today)} style={{ marginTop:14, padding:"9px 14px", borderRadius:10, border:`1px solid ${T.border}`, background:T.card, color:T.sub, fontSize:11, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}>Today</button>
+      </div>
+
+      {/* Measurements */}
+      <div style={s.card}>
+        <SHead icon="📏" label="MEASUREMENTS" color={T.purple} right={prevKey&&<span style={{ fontSize:10, color:T.muted }}>vs {dayLabel(prevKey,true)}</span>}/>
+        <div style={{ padding:"12px 16px 16px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          {MEASUREMENTS.map(m=>{
+            const prev=prevM?num(prevM[m.id]):null;
+            const curr=num(cur[m.id]);
+            const diff=prev&&curr?(curr-prev).toFixed(1):null;
+            return (
+              <div key={m.id} style={{ padding:"10px", background:T.card2, borderRadius:12, border:`1px solid ${T.border}` }}>
+                <div style={{ ...s.row, justifyContent:"space-between", marginBottom:6 }}>
+                  <div style={s.lbl}>{m.label}</div>
+                  {diff!==null && <span style={{ fontSize:9, fontWeight:800, color:num(diff)<0?T.green:num(diff)>0?T.red:T.muted }}>{num(diff)>0?"+":""}{diff}"</span>}
+                </div>
+                <Inp value={cur[m.id]||""} onChange={e=>setM(m.id,e.target.value)} placeholder="0.0" unit="in"/>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Measurement history table */}
+      {allKeys.length>1 && (
+        <div style={s.card}>
+          <SHead icon="📈" label="MEASUREMENT HISTORY" color={T.purple}/>
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11, minWidth:340 }}>
+              <thead>
+                <tr style={{ background:T.card2 }}>
+                  <th style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700 }}>Date</th>
+                  {MEASUREMENTS.slice(0,4).map(m=><th key={m.id} style={{ padding:"8px", color:T.muted, fontWeight:700, textAlign:"center" }}>{m.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {allKeys.slice(0,8).map(k=>{
+                  const m=getM(k);
+                  return (
+                    <tr key={k} onClick={()=>setViewDate(k)} style={{ borderTop:`1px solid ${T.border}`, background:k===viewDate?T.accentL:"transparent", cursor:"pointer" }}>
+                      <td style={{ padding:"8px 12px", fontWeight:k===viewDate?700:400, color:k===viewDate?T.accent:T.sub, whiteSpace:"nowrap" }}>{dayLabel(k)}</td>
+                      {MEASUREMENTS.slice(0,4).map(ms=><td key={ms.id} style={{ padding:"8px", textAlign:"center", color:m[ms.id]?T.text:T.border }}>{m[ms.id]||"–"}</td>)}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <JournalSection data={data} setData={setData}/>
+      <DoneBtn label="Body" onDone={markDone} isDone={isDone}/>
+    </div>
+  );
+}
+
+// ── PROGRESS TAB ──────────────────────────────────────────────────────────────
+function ProgressTab({ data, setData, profile }) {
+  const [subTab, setSubTab] = useState("overview");
+  const week = weekKeys();
+  const today = todayKey();
+  const streak = calcStreak(data);
+  const startW=num(profile.currentWeight), goalW=num(profile.goalWeight);
+  const totalCalNeeded=(startW-goalW)*3500;
+  const mg=profile.macroGoals||{};
+
+  const targetCal7 = profile.tdee - num(profile.deficitGoal);
+  const proteinGoal7 = num(mg.protein) || Math.round(targetCal7*0.3/4);
+
+  const rows = week.map(k=>{
+    const d=data.nutrition?.[k]||{};
+    const p=num(d.protein),c=num(d.carbs),f=num(d.fat),steps=num(data.activity?.[k]?.steps),w=num(d.weight);
+    const cal=p*4+c*4+f*9;
+    const sCal=steps>0?stepCals(steps,startW):0;
+    const dayDef=cal>0?(profile.tdee-cal+sCal):sCal;
+    const hasW=Object.values(data.workouts?.[k]||{}).some(l=>l?.length>0);
+    const hitProtein = p>0 && p >= proteinGoal7*0.9;
+    const underCal   = cal>0 && cal <= targetCal7;
+    const hit10k     = steps >= 10000;
+    return {k,p,cal,steps,sCal,dayDef,w,hasW,hitProtein,underCal,hit10k};
+  });
+
+  const loggedDays=rows.filter(r=>r.cal>0).length;
+  // dayDef can be negative (over-ate) — that correctly adds back to remaining
+  const cumDef=rows.reduce((a,r)=>a+r.dayDef,0);
+  const calRemaining=Math.max(0,totalCalNeeded-cumDef);
+  const pctProgress=totalCalNeeded>0?Math.min(100,Math.max(0,(cumDef/totalCalNeeded)*100)):0;
+  const workoutDays=rows.filter(r=>r.hasW).length;
+  const proteinDays=rows.filter(r=>r.p>=num(mg.protein)*0.9).length;
+
+  function getGrade(score,max) {
+    const p=score/max;
+    if(p>=0.86) return {l:"A",c:T.green,bg:T.greenL};
+    if(p>=0.71) return {l:"B",c:T.blue,bg:T.blueL};
+    if(p>=0.57) return {l:"C",c:T.yellow,bg:T.yellowL};
+    if(p>=0.43) return {l:"D",c:T.orange,bg:T.orangeL};
+    return {l:"F",c:T.red,bg:T.redL};
+  }
+  const grades=[
+    {label:"Nutrition Logged",score:loggedDays,max:7,color:T.green},
+    {label:"Protein Goal Met",score:proteinDays,max:7,color:T.red},
+    {label:"Workouts",score:workoutDays,max:7,color:T.orange},
+  ];
+  const overallGrade=getGrade(grades.reduce((a,g)=>a+g.score/g.max,0)/grades.length*7,7);
+
+  const subTabs=[{id:"overview",label:"Overview"},{id:"charts",label:"Charts"},{id:"history",label:"History"},{id:"predict",label:"Predict"}];
+  // 28 days oldest→newest: index 0 = 27 days ago (top-left), index 27 = today (bottom-right)
+  const bubbleKeys = nDaysKeys(28); // nDaysKeys already returns oldest first
+
+  // Weight chart for progress
+  const wKeys30=nDaysKeys(30);
+  const wVals30=wKeys30.map(k=>num(data.nutrition?.[k]?.weight)||null);
+
+  // Per-day bubble data
+  function getDayBubble(k) {
+    const nutr = data.nutrition?.[k]||{};
+    const actSteps = num(data.activity?.[k]?.steps);
+    const cal = num(nutr.protein)*4 + num(nutr.carbs)*4 + num(nutr.fat)*9;
+    const targetCal = profile.tdee - num(profile.deficitGoal);
+    const proteinGoal = num(profile.macroGoals?.protein) || Math.round(targetCal*0.3/4);
+    const inDeficit = cal>0 && cal <= targetCal;
+    const overCal   = cal>0 && cal > targetCal;
+    const hitProtein = cal>0 && num(nutr.protein) >= proteinGoal*0.9;
+    const didLifting = (data.workouts?.[k]?.lifting||[]).length > 0;
+    const didRehab   = (data.workouts?.[k]?.rehab||[]).length > 0;
+    const didAthleticism = (data.workouts?.[k]?.athleticism||[]).length > 0;
+    const hit10k = actSteps >= 10000;
+    const hasAny = cal>0 || didLifting || didRehab || didAthleticism || actSteps>0;
+    return { inDeficit, overCal, hitProtein, didLifting, didRehab, didAthleticism, hit10k, hasAny };
+  }
+
+  return (
+    <div style={{ ...s.col, gap:14 }}>
+      <div style={{ display:"flex", gap:4, background:T.card, borderRadius:14, padding:4, border:`1px solid ${T.border}`, boxShadow:"0 1px 4px rgba(0,0,0,0.05)", overflowX:"auto" }}>
+        {subTabs.map(t=>(
+          <button key={t.id} onClick={()=>setSubTab(t.id)} style={{ flexShrink:0, padding:"8px 12px", borderRadius:11, border:"none", fontSize:11, fontWeight:700, background:subTab===t.id?T.accent:"transparent", color:subTab===t.id?"#fff":T.muted, cursor:"pointer", whiteSpace:"nowrap" }}>{t.label}</button>
+        ))}
+      </div>
+
+      {subTab==="overview" && <>
+        {/* Streak */}
+        <div style={{ ...s.card, border:`2px solid ${streak>=3?T.green+"88":T.border}`, background: streak>=7 ? `linear-gradient(135deg, #f0fdf4, #ffffff)` : T.card }}>
+          <div style={{ padding:"20px 20px 0", ...s.row, gap:16, justifyContent:"space-between" }}>
+            <div style={s.row}>
+              <div style={{ fontSize:50, lineHeight:1, marginRight:16 }}>🔥</div>
+              <div>
+                <div style={{ fontSize:52, fontWeight:900, color:streak>=3?T.green:T.accent, lineHeight:1 }}>{streak}</div>
+                <div style={{ fontSize:13, color:T.muted, marginTop:3, fontWeight:600 }}>day streak</div>
+              </div>
+            </div>
+            <div style={{ textAlign:"right" }}>
+              <div style={s.lbl}>THIS WEEK</div>
+              <div style={{ fontSize:16, fontWeight:800, color:T.text, marginTop:4 }}>{weekKeys().filter(k=>{ const hasN=num((data.nutrition?.[k]||{}).protein)>0; const hasW=Object.values(data.workouts?.[k]||{}).some(l=>l?.length>0); return hasN||hasW; }).length}/7 days active</div>
+            </div>
+          </div>
+          <div style={{ padding:"12px 16px 14px" }}>
+            <div style={{ ...s.lbl, marginBottom:8 }}>LAST 28 DAYS (OLDEST → NEWEST, LEFT → RIGHT)</div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5, direction:"ltr" }}>
+              {bubbleKeys.map((k)=>{
+                const b = getDayBubble(k);
+                const isToday = k===today;
+                const bgColor = !b.hasAny ? "#EEEBE6" : b.inDeficit ? T.greenL : b.overCal ? T.redL : T.yellowL;
+                const borderColor = !b.hasAny ? T.border : b.inDeficit ? T.green : b.overCal ? T.red : T.yellow;
+                const icons = [
+                  b.hitProtein     && "🥩",
+                  b.didLifting     && "🏋️",
+                  b.hit10k         && "👟",
+                  b.didRehab       && "➕",
+                  b.didAthleticism && "⚡",
+                ].filter(Boolean);
+                return (
+                  <div key={k} title={k} style={{
+                    borderRadius:8, background:bgColor,
+                    border: isToday ? `2.5px solid ${T.accent}` : `1.5px solid ${borderColor}`,
+                    aspectRatio:"1", width:"100%",
+                    display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                    gap:1, padding:2, overflow:"hidden", boxSizing:"border-box",
+                  }}>
+                    {icons.length===0 && b.hasAny && <span style={{ fontSize:12, color: b.inDeficit?T.green:b.overCal?T.red:T.yellow, fontWeight:900 }}>✓</span>}
+                    {icons.length===0 && !b.hasAny && <span style={{ fontSize:11, color:"#CCC" }}>–</span>}
+                    {icons.length>0 && <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"center", gap:0, lineHeight:1 }}>
+                      {icons.map((ic,i)=><span key={i} style={{ fontSize:12 }}>{ic}</span>)}
+                    </div>}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Legend */}
+            <div style={{ ...s.col, gap:6, marginTop:10 }}>
+              <div style={{ ...s.row, gap:10, flexWrap:"wrap" }}>
+                {[[T.greenL,T.green,"Deficit day"],[T.redL,T.red,"Over calories"],[T.yellowL,T.yellow,"Calories logged"]].map(([bg,bc,l])=>(
+                  <div key={l} style={s.row}>
+                    <div style={{ width:10,height:10,borderRadius:3,background:bg,border:`1.5px solid ${bc}`,marginRight:5 }}/>
+                    <span style={{ fontSize:9,color:T.muted }}>{l}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ ...s.row, gap:10, flexWrap:"wrap" }}>
+                {[["🥩","Protein goal"],["🏋️","Lifted"],["👟","10k steps"],["➕","Rehab"],["⚡","Athleticism"]].map(([icon,l])=>(
+                  <div key={l} style={s.row}><span style={{ fontSize:10,marginRight:3 }}>{icon}</span><span style={{ fontSize:9,color:T.muted }}>{l}</span></div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Goal card */}
+        <div style={{ ...s.card, border:`1.5px solid ${T.accent}44` }}>
+          <SHead icon="🎯" label="WEIGHT GOAL" color={T.accent}/>
+          <div style={{ padding:16 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
+              <SBox label="Starting" value={startW||"–"} sub="lbs"/>
+              <SBox label="Goal" value={goalW||"–"} sub="lbs" color={T.green} bg={T.greenL}/>
+              <SBox label="To Lose" value={startW-goalW>0?startW-goalW:"–"} sub="lbs" color={T.accent} bg={T.accentL}/>
+            </div>
+            <div style={{ ...s.row, justifyContent:"space-between", marginBottom:6 }}>
+              <div style={s.lbl}>DEFICIT PROGRESS TO GOAL</div>
+              <div style={{ fontSize:11, fontWeight:800, color:T.green }}>{pctProgress.toFixed(1)}%</div>
+            </div>
+            <Bar pct={pctProgress} color={T.green} height={10} bg={T.greenL}/>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:14 }}>
+              <SBox label={cumDef>=0?"7-Day Deficit":"7-Day Surplus"} value={fmtInt(Math.abs(Math.round(cumDef)))} sub="kcal net" color={cumDef>=0?T.green:T.red} bg={cumDef>=0?T.greenL:T.redL}/>
+              <SBox label="Remaining to Goal" value={fmtInt(Math.round(calRemaining))} sub="kcal to burn/cut" color={T.yellow} bg={T.yellowL}/>
+              <SBox label="Est. Lost (7d)" value={cumDef!==0?`${cumDef<0?"-":""}${Math.abs(cumDef/3500).toFixed(2)} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL} big/>
+              <SBox label="Daily Target" value={fmtInt(profile.deficitGoal)} sub="kcal deficit/day"/>
+            </div>
+          </div>
+        </div>
+
+        {/* Daily breakdown */}
+        <div style={s.card}>
+          <SHead icon="📅" label="THIS WEEK" color={T.blue}/>
+          {rows.slice().reverse().map(r=>{
+            const isToday=r.k===today;
+            const has=r.cal>0||r.steps>0||r.w>0;
+            return (
+              <div key={r.k} style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}`, background:isToday?T.accentL:"transparent" }}>
+                <div style={{ ...s.row, justifyContent:"space-between", marginBottom:has?8:0 }}>
+                  <span style={{ fontSize:12, fontWeight:800, color:isToday?T.accent:T.sub }}>{dayLabel(r.k)}</span>
+                  <div style={s.row}>{r.hasW&&<span style={{ fontSize:12, marginRight:6 }}>🏋️</span>}{r.w>0&&<span style={{ fontSize:11, color:T.muted }}>{r.w} lbs</span>}</div>
+                </div>
+                {has ? (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
+                    {[
+                      {label:"CALORIES",    value:r.cal>0?fmtInt(r.cal):"–",          color:r.cal>0?(r.underCal?T.green:T.red):T.muted},
+                      {label:"STEPS",       value:r.steps>0?fmtInt(r.steps):"–",      sub:r.sCal>0?`~${r.sCal} kcal`:null, color:r.steps>0?(r.hit10k?T.green:T.red):T.muted},
+                      {label:"DAY DEFICIT", value:(r.cal>0||r.sCal>0)?`${r.dayDef>0?"+":""}${fmtInt(r.dayDef)}`:"–", color:r.dayDef>0?T.green:r.dayDef<0?T.red:T.muted},
+                      {label:"PROTEIN",     value:r.p>0?`${r.p}g`:"–",                color:r.p>0?(r.hitProtein?T.green:T.red):T.muted},
+                      {label:"EST. LOST",   value:(r.cal>0||r.sCal>0)?`${r.dayDef<0?"-":""}${Math.abs(r.dayDef/3500).toFixed(3)} lbs`:"–", color:r.dayDef>=0?T.accent:T.red},
+                      {label:"CAL TO GOAL", value:fmtInt(Math.round(calRemaining)),   color:T.muted},
+                    ].map((item,i)=>(
+                      <div key={i} style={s.col}>
+                        <div style={s.lbl}>{item.label}</div>
+                        <div style={{ fontSize:13, fontWeight:800, color:item.color }}>{item.value}</div>
+                        {item.sub&&<div style={{ fontSize:10, color:T.green }}>{item.sub}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : <div style={{ fontSize:12, color:T.muted }}>No data logged</div>}
+              </div>
+            );
+          })}
+        </div>
+      </>}
+
+      {subTab==="charts" && (
+        <div style={{ ...s.col, gap:14 }}>
+          <div style={s.card}>
+            <SHead icon="📉" label="WEIGHT TREND — 30 DAYS" color={T.blue}/>
+            <LineChart keys={wKeys30} values={wVals30} color={T.blue} goalValue={goalW}/>
+          </div>
+          <div style={s.card}>
+            <SHead icon="🔥" label="CALORIE TREND — 14 DAYS" color={T.orange}/>
+            <LineChart keys={nDaysKeys(14)} values={nDaysKeys(14).map(k=>{const d=data.nutrition?.[k]||{};const cal=num(d.protein)*4+num(d.carbs)*4+num(d.fat)*9;return cal>0?cal:null;})} color={T.orange} goalValue={profile.tdee-num(profile.deficitGoal)}/>
+          </div>
+        </div>
+      )}
+
+      {subTab==="history" && (
+        <div style={{ ...s.col, gap:14 }}>
+          <div style={s.card}>
+            <SHead icon="📋" label="CALORIE & MACRO HISTORY" color={T.green}/>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11, minWidth:380 }}>
+                <thead>
+                  <tr style={{ background:T.card2 }}>
+                    {["Date","Cal","Protein","Carbs","Fat","Steps","Weight"].map(h=>(
+                      <th key={h} style={{ padding:"8px 10px", color:T.muted, fontWeight:700, textAlign:"center", whiteSpace:"nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {nDaysKeys(30).slice().reverse().map(k=>{
+                    const d=data.nutrition?.[k]||{};
+                    const p=num(d.protein),c=num(d.carbs),f=num(d.fat),w=num(d.weight);
+                    const cal=p*4+c*4+f*9;
+                    const steps=num(data.activity?.[k]?.steps);
+                    const isToday2=k===today;
+                    const targetCal2=profile.tdee-num(profile.deficitGoal);
+                    const proteinGoal2=num(mg.protein)||Math.round(targetCal2*0.3/4);
+                    const hasData=cal>0||w>0||steps>0;
+                    if(!hasData && !isToday2) return null;
+                    return (
+                      <tr key={k} style={{ borderTop:`1px solid ${T.border}`, background:isToday2?T.accentL:"transparent" }}>
+                        <td style={{ padding:"8px 10px", fontWeight:isToday2?800:500, color:isToday2?T.accent:T.sub, whiteSpace:"nowrap" }}>
+                          {isToday2?"Today":new Date(k+"T00:00").toLocaleDateString("en-US",{month:"numeric",day:"numeric"})}
+                        </td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", fontWeight:700, color:cal>0?(cal<=targetCal2?T.green:T.red):T.border }}>{cal>0?fmtInt(cal):"–"}</td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", fontWeight:700, color:p>0?(p>=proteinGoal2*0.9?T.green:T.red):T.border }}>{p>0?`${p}g`:"–"}</td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", color:c>0?T.text:T.border }}>{c>0?`${c}g`:"–"}</td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", color:f>0?T.text:T.border }}>{f>0?`${f}g`:"–"}</td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", color:steps>0?(steps>=10000?T.green:T.yellow):T.border }}>{steps>0?fmtInt(steps):"–"}</td>
+                        <td style={{ padding:"8px 6px", textAlign:"center", color:w>0?T.blue:T.border }}>{w>0?`${w}`:"–"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding:"8px 14px 10px", ...s.row, gap:12, flexWrap:"wrap", borderTop:`1px solid ${T.border}` }}>
+              {[[T.green,"Under cal"],[T.red,"Over cal / protein missed"],[T.green,"Protein hit"],[T.yellow,"Steps partial"],[T.green,"10k steps"]].map(([c,l])=>(
+                <div key={l} style={s.row}><div style={{ width:8,height:8,borderRadius:"50%",background:c,marginRight:4 }}/><span style={{ fontSize:9,color:T.muted }}>{l}</span></div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {subTab==="predict" && (
+        <div style={{ ...s.col, gap:14 }}>
+          {(()=>{
+            // Use last 14 days of logged data to compute avg daily deficit
+            const recentKeys=nDaysKeys(14);
+            const loggedRows=recentKeys.map(k=>{
+              const d=data.nutrition?.[k]||{};
+              const p=num(d.protein),c=num(d.carbs),f=num(d.fat),steps=num(data.activity?.[k]?.steps);
+              const cal=p*4+c*4+f*9;
+              const sCal2=steps>0?stepCals(steps,startW):0;
+              if(cal===0) return null;
+              return profile.tdee-cal+sCal2;
+            }).filter(v=>v!==null);
+            const avgDailyDeficit=loggedRows.length>0?loggedRows.reduce((a,b)=>a+b,0)/loggedRows.length:num(profile.deficitGoal);
+            const latestWeights=nDaysKeys(30).map(k=>num(data.nutrition?.[k]?.weight)).filter(Boolean);
+            const currentW=latestWeights[latestWeights.length-1]||startW;
+            const predictions=[30,60,90].map(days=>{
+              const lbsLost=(avgDailyDeficit*days)/3500;
+              const projW=Math.max(goalW, currentW-lbsLost);
+              return {days, lbsLost, projW};
+            });
+            const daysToGoal=avgDailyDeficit>0?Math.ceil((currentW-goalW)*3500/avgDailyDeficit):null;
+            const goalDate=daysToGoal?new Date(Date.now()+daysToGoal*86400000).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}):null;
+            return <>
+              <div style={{ ...s.card, border:`1.5px solid ${T.accent}44` }}>
+                <SHead icon="🔮" label="WEIGHT PREDICTION" color={T.accent}/>
+                <div style={{ padding:16 }}>
+                  <div style={{ padding:"12px 14px", background:T.accentL, borderRadius:12, marginBottom:14 }}>
+                    <div style={s.lbl}>BASED ON YOUR LAST {loggedRows.length} LOGGED DAYS</div>
+                    <div style={{ fontSize:13, color:T.text, marginTop:4 }}>Avg daily deficit: <span style={{ fontWeight:900, color:avgDailyDeficit>=0?T.green:T.red }}>{avgDailyDeficit>=0?"+":""}{Math.round(avgDailyDeficit)} kcal/day</span></div>
+                    <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>Current weight: <span style={{ fontWeight:700, color:T.text }}>{currentW} lbs</span> · Goal: <span style={{ fontWeight:700, color:T.green }}>{goalW} lbs</span></div>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
+                    {predictions.map(({days,lbsLost,projW})=>(
+                      <div key={days} style={{ ...s.col, gap:4, padding:"14px 10px", background:projW<=goalW?T.greenL:T.card2, borderRadius:14, border:`1.5px solid ${projW<=goalW?T.green:T.border}`, textAlign:"center" }}>
+                        <div style={s.lbl}>{days} DAYS</div>
+                        <div style={{ fontSize:22, fontWeight:900, color:projW<=goalW?T.green:T.accent, lineHeight:1 }}>{projW.toFixed(1)}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>lbs</div>
+                        <div style={{ fontSize:10, fontWeight:700, color:lbsLost>=0?T.green:T.red, marginTop:2 }}>
+                          {lbsLost>=0?"-":"+"}{Math.abs(lbsLost).toFixed(1)} lbs
+                        </div>
+                        {projW<=goalW && <div style={{ fontSize:10, color:T.green, fontWeight:800 }}>🎯 Goal!</div>}
+                      </div>
+                    ))}
+                  </div>
+                  {goalDate && avgDailyDeficit>0 && (
+                    <div style={{ padding:"14px", background:T.greenL, borderRadius:12, border:`1px solid ${T.green}44`, textAlign:"center" }}>
+                      <div style={s.lbl}>ESTIMATED GOAL DATE</div>
+                      <div style={{ fontSize:20, fontWeight:900, color:T.green, marginTop:6 }}>{goalDate}</div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>~{daysToGoal} days · {Math.ceil(daysToGoal/7)} weeks from today</div>
+                    </div>
+                  )}
+                  {avgDailyDeficit<=0 && (
+                    <div style={{ padding:"12px 14px", background:T.redL, borderRadius:12, border:`1px solid ${T.red}44` }}>
+                      <div style={{ fontSize:12, color:T.red, fontWeight:700 }}>⚠️ Your recent average is a calorie surplus. Log more days in deficit to see a goal date prediction.</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>;
+          })()}
+        </div>
+      )}
+
+      {subTab==="report" && (
+        <div style={{ ...s.col, gap:14 }}>
+          <div style={{ ...s.card, border:`1.5px solid ${overallGrade.c}55` }}>
+            <SHead icon="📋" label="WEEKLY REPORT CARD" color={overallGrade.c}/>
+            <div style={{ padding:"16px", ...s.row, gap:18 }}>
+              <div style={{ width:68, height:68, borderRadius:16, background:overallGrade.bg, border:`2px solid ${overallGrade.c}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                <span style={{ fontSize:32, fontWeight:900, color:overallGrade.c }}>{overallGrade.l}</span>
+              </div>
+              <div style={{ ...s.col, gap:10, flex:1 }}>
+                {grades.map(g=>{
+                  const gr=getGrade(g.score,g.max);
+                  return (
+                    <div key={g.label}>
+                      <div style={{ ...s.row, justifyContent:"space-between", marginBottom:4 }}>
+                        <span style={{ fontSize:11, color:T.sub }}>{g.label}</span>
+                        <span style={{ fontSize:11, fontWeight:800, color:gr.c }}>{g.score}/{g.max}d — {gr.l}</span>
+                      </div>
+                      <Bar pct={(g.score/g.max)*100} color={g.color} height={5} bg={`${g.color}22`}/>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div style={s.card}>
+            <SHead icon="📊" label="WEEK AT A GLANCE" color={T.accent}/>
+            <div style={{ padding:16, display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+              <SBox label="Days Logged" value={`${loggedDays}/7`} color={T.green} bg={T.greenL}/>
+              <SBox label="Protein Goal" value={`${proteinDays}/7`} sub="days hit" color={T.red} bg={T.redL}/>
+              <SBox label="Workouts" value={`${workoutDays}/7`} color={T.orange} bg={T.orangeL}/>
+              <SBox label="Total Deficit" value={fmtInt(Math.round(cumDef))} sub="kcal" color={cumDef>=0?T.green:T.red} bg={cumDef>=0?T.greenL:T.redL}/>
+              <SBox label="Avg Cal/Day" value={loggedDays>0?fmtInt(Math.round(rows.reduce((a,r)=>a+r.cal,0)/loggedDays)):"–"} sub="kcal"/>
+              <SBox label="Est. Lost" value={cumDef!==0?`${cumDef<0?"-":""}${Math.abs(cumDef/3500).toFixed(2)} lbs`:"–"} sub={cumDef<0?"net gained":"net lost"} color={cumDef>=0?T.accent:T.red} bg={cumDef>=0?T.accentL:T.redL}/>
+            </div>
+          </div>
+
+          <CopyExport data={data} profile={profile}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── APP SHELL ─────────────────────────────────────────────────────────────────
+const TABS = [
+  { id:"nutrition", label:"Nutrition", icon:"🥗", color:T.green },
+  { id:"workout",   label:"Activity",  icon:"💪", color:T.orange },
+  { id:"body",      label:"Body",      icon:"📏", color:T.purple },
+  { id:"progress",  label:"Progress",  icon:"📈", color:T.blue },
+];
+
+function TrackerApp() {
+  const [data, setData] = useState({});
+  const [profile, setProfile] = useState(null);
+  const [tab, setTab] = useState("nutrition");
+  const [loaded, setLoaded] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
+  const [celebration, setCelebration] = useState(null);
+
+  useEffect(()=>{
+    (async()=>{
+      const _saved=_loadData(); if(_saved){setData(_saved.data||{});setProfile(_saved.profile||null);}
+      setLoaded(true);
+    })();
+  },[]);
+
+  useEffect(()=>{ if(!loaded) return; _saveData({data,profile}); },[data,profile,loaded]);
+
+  if(!loaded) return <div style={{ background:T.bg, minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", color:T.muted, fontFamily:"sans-serif" }}>Loading…</div>;
+  if(!profile||showSetup) return <Setup profile={profile} setProfile={p=>{setProfile(p);setShowSetup(false);}} onDone={()=>setShowSetup(false)}/>;
+
+  const todayStr = new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
+  const streak = calcStreak(data);
+  const today = todayKey();
+  const done = data.done?.[today]||{};
+  const completedCount = [done.nutrition,done.workout,done.body].filter(Boolean).length;
+  const allDone = completedCount===3;
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'DM Sans','Helvetica Neue',sans-serif", maxWidth:480, margin:"0 auto", paddingBottom:92 }}>
+      {celebration && <Celebration message={celebration} onClose={()=>setCelebration(null)}/>}
+
+      {/* Header */}
+      <div style={{ padding:"26px 18px 12px", background:T.card, borderBottom:`1px solid ${T.border}`, ...s.row, justifyContent:"space-between", boxShadow:"0 1px 6px rgba(0,0,0,0.05)" }}>
+        <div>
+          <div style={{ fontSize:9, color:T.muted, letterSpacing:"0.14em", textTransform:"uppercase" }}>{todayStr}</div>
+          <h1 style={{ fontSize:22, fontWeight:900, margin:"3px 0 0", color:T.accent, letterSpacing:"-0.4px" }}>My Tracker</h1>
+          <div style={{ fontSize:11, color:allDone?T.green:completedCount>0?T.orange:T.muted, fontWeight:700, marginTop:3 }}>
+            {allDone?"🏆 All sections done today!":completedCount>0?`${completedCount}/3 sections done`:"Nothing logged yet today"}
+          </div>
+        </div>
+        <div style={s.row}>
+          <div style={{ ...s.row, gap:5, marginRight:10, padding:"5px 10px", background:streak>0?T.greenL:T.card2, borderRadius:99, border:`1px solid ${streak>0?T.green+"44":T.border}` }}>
+            <span style={{ fontSize:13 }}>🔥</span>
+            <span style={{ fontSize:12, fontWeight:800, color:streak>0?T.green:T.muted }}>{streak}d</span>
+          </div>
+          <button onClick={()=>setShowSetup(true)} style={{ background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:10, padding:"7px 12px", color:T.sub, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>⚙</button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ padding:"14px 14px 0" }}>
+        {tab==="nutrition" && <NutritionTab data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
+        {tab==="workout"   && <WorkoutTab   data={data} setData={setData} onCelebrate={setCelebration} profile={profile}/>}
+        {tab==="body"      && <BodyTab      data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
+        {tab==="progress"  && <ProgressTab  data={data} setData={setData} profile={profile}/>}
+      </div>
+
+      {/* Bottom nav */}
+      <div style={{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:T.card, borderTop:`1px solid ${T.border}`, display:"flex", padding:"8px 0 16px", boxShadow:"0 -2px 12px rgba(0,0,0,0.08)" }}>
+        {TABS.map(t=>{
+          const active=tab===t.id;
+          const tabDone=t.id==="nutrition"?done.nutrition:t.id==="workout"?done.workout:t.id==="body"?done.body:false;
+          return (
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, border:"none", background:"none", cursor:"pointer", padding:"5px 2px", ...s.col, alignItems:"center", gap:2, position:"relative" }}>
+              <span style={{ fontSize:18 }}>{t.icon}</span>
+              <span style={{ fontSize:8, fontWeight:800, letterSpacing:"0.07em", color:active?t.color:T.muted }}>{t.label.toUpperCase()}</span>
+              {active && <div style={{ width:22, height:3, borderRadius:99, background:t.color, marginTop:1 }}/>}
+              {tabDone && !active && <div style={{ position:"absolute", top:3, right:"20%", width:8, height:8, borderRadius:"50%", background:T.green, border:`2px solid ${T.card}` }}/>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Backup/Export card ────────────────────────────────────────────────────────
+function BackupCard({data,profile,setData,setProfile}){
+  const [copied,setCopied]=useState(false);
+  const today=todayKey();
+
+  function buildSummary(){
+    const tc=profile.tdee-num(profile.deficitGoal);
+    const lines=[
+      `📊 WEEKLY SUMMARY — ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}`,
+      `Goal: ${profile.currentWeight}lbs → ${profile.goalWeight}lbs | TDEE: ${profile.tdee} | Target: ${tc} kcal/day`,
+      "","Day          Cal    Protein  Steps    Weight   Deficit","─".repeat(54)
+    ];
+    let tot=0;
+    weekKeys().forEach(k=>{
+      const d=data.nutrition?.[k]||{};
+      const p=num(d.protein),c=num(d.carbs),f=num(d.fat),w=num(d.weight);
+      const cal=p*4+c*4+f*9,steps=num(data.activity?.[k]?.steps);
+      const sc=steps>0?stepCals(steps,num(profile.currentWeight)):0;
+      const def=cal>0?(profile.tdee-cal+sc):sc; tot+=def;
+      const lbl=(k===today?"Today":new Date(k+"T00:00").toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"})).padEnd(13);
+      lines.push(`${lbl}${(cal>0?cal:"–").toString().padEnd(7)}${(p>0?p+"g":"–").toString().padEnd(9)}${(steps>0?steps.toLocaleString():"–").toString().padEnd(9)}${(w>0?w+"lbs":"–").toString().padEnd(9)}${def!==0?(def>0?"+":"")+Math.round(def):"–"}`);
+    });
+    lines.push("─".repeat(54),`Weekly deficit: ${Math.round(tot)} kcal | Est. lost: ${(tot/3500).toFixed(2)} lbs`,`Streak: ${calcStreak(data)} days 🔥`);
+    return lines.join("\n");
+  }
+
+  function doCopy(){
+    const txt=buildSummary();
+    if(navigator.clipboard?.writeText){navigator.clipboard.writeText(txt).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500);});}
+    else{const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");document.body.removeChild(el);setCopied(true);setTimeout(()=>setCopied(false),2500);}
+  }
+
+  const T2={teal:"#0D9488",tealL:"#CCFBF1",blue:"#2563EB",blueL:"#DBEAFE",card:"#fff",border:"#E6DFD8",muted:"#A89B90",sub:"#7A6F65",card2:"#FAF8F5",green:"#16A34A",greenL:"#DCFCE7"};
+  return (
+    <div style={{background:T2.card,borderRadius:18,border:`1px solid ${T2.border}`,overflow:"hidden",boxShadow:"0 1px 6px rgba(0,0,0,0.06)"}}>
+      <div style={{display:"flex",alignItems:"center",padding:"13px 16px 11px",borderBottom:`1px solid ${T2.border}`}}>
+        <span style={{fontSize:15,marginRight:8}}>📤</span>
+        <span style={{fontSize:10,fontWeight:800,letterSpacing:"0.12em",color:T2.teal}}>EXPORT & BACKUP</span>
+      </div>
+      <div style={{padding:"14px 16px 16px",display:"flex",flexDirection:"column",gap:12}}>
+        <button onClick={doCopy} style={{padding:"13px",borderRadius:13,border:"none",background:copied?T2.greenL:T2.teal,color:copied?T2.green:"#fff",fontWeight:800,fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          <span style={{fontSize:18}}>{copied?"✅":"📋"}</span>{copied?"Copied!":"Copy Weekly Summary"}
+        </button>
+        <div style={{height:1,background:T2.border}}/>
+        <div style={{fontSize:11,color:T2.sub,fontWeight:700}}>💾 BACKUP YOUR DATA</div>
+        <div style={{fontSize:12,color:T2.muted,lineHeight:1.5}}>Download a file to back up all your data. Restore it anytime if you change phones or clear your browser.</div>
+        <button onClick={()=>downloadBackup(data,profile)} style={{padding:"13px",borderRadius:13,border:`1.5px solid ${T2.blue}`,background:T2.blueL,color:T2.blue,fontWeight:800,fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          <span style={{fontSize:18}}>💾</span>Download Backup (.json)
+        </button>
+        <label style={{padding:"13px",borderRadius:13,border:`1.5px solid ${T2.border}`,background:T2.card2,color:T2.sub,fontWeight:800,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          <span style={{fontSize:18}}>📂</span>Restore from Backup
+          <input type="file" accept=".json" onChange={e=>{if(e.target.files?.[0])restoreBackup(e.target.files[0],setData,setProfile);e.target.value="";}} style={{display:"none"}}/>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ── Mount ─────────────────────────────────────────────────────────────────────
+function AppRoot(){
+  const [data,setData]=useState({});
+  const [profile,setProfile]=useState(null);
+  const [tab,setTab]=useState("nutrition");
+  const [loaded,setLoaded]=useState(false);
+  const [showSetup,setShowSetup]=useState(false);
+  const [celebration,setCelebration]=useState(null);
+
+  useEffect(()=>{
+    const saved=_loadData();
+    if(saved){setData(saved.data||{});setProfile(saved.profile||null);}
+    setLoaded(true);
+  },[]);
+
+  useEffect(()=>{ if(!loaded)return; _saveData({data,profile}); },[data,profile,loaded]);
+
+  if(!loaded) return <div style={{background:"#F4F1ED",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#A89B90",fontSize:14,fontFamily:"sans-serif"}}>Loading…</div>;
+  if(!profile||showSetup) return <Setup profile={profile} setProfile={p=>{setProfile(p);setShowSetup(false);}} onDone={()=>setShowSetup(false)}/>;
+
+  const todayStr=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
+  const streak=calcStreak(data);
+  const today=todayKey();
+  const done=data.done?.[today]||{};
+  const doneCount=[done.nutrition,done.workout,done.body].filter(Boolean).length;
+
+  const TABS=[
+    {id:"nutrition",label:"Nutrition",icon:"🥗",color:"#16A34A"},
+    {id:"workout",label:"Activity",icon:"💪",color:"#EA580C"},
+    {id:"body",label:"Body",icon:"📏",color:"#7C3AED"},
+    {id:"progress",label:"Progress",icon:"📈",color:"#2563EB"},
+  ];
+
+  return (
+    <div style={{minHeight:"100vh",background:"#F4F1ED",color:"#1C1510",maxWidth:480,margin:"0 auto",paddingBottom:92,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
+      {celebration&&<Celebration message={celebration} onClose={()=>setCelebration(null)}/>}
+      <div style={{padding:"26px 18px 12px",background:"#fff",borderBottom:"1px solid #E6DFD8",display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 1px 6px rgba(0,0,0,0.05)"}}>
+        <div>
+          <div style={{fontSize:9,color:"#A89B90",letterSpacing:"0.14em",textTransform:"uppercase"}}>{todayStr}</div>
+          <h1 style={{fontSize:22,fontWeight:900,margin:"3px 0 0",color:"#E05A2B",letterSpacing:"-0.4px"}}>My Tracker</h1>
+          <div style={{fontSize:11,fontWeight:700,marginTop:3,color:doneCount===3?"#16A34A":doneCount>0?"#EA580C":"#A89B90"}}>
+            {doneCount===3?"🏆 All done today!":doneCount>0?`${doneCount}/3 done today`:"Nothing logged yet"}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",background:streak>0?"#DCFCE7":"#FAF8F5",borderRadius:99,border:`1px solid ${streak>0?"#86EFAC":"#E6DFD8"}`}}>
+            <span style={{fontSize:13}}>🔥</span>
+            <span style={{fontSize:12,fontWeight:800,color:streak>0?"#16A34A":"#A89B90"}}>{streak}d</span>
+          </div>
+          <button onClick={()=>setShowSetup(true)} style={{background:"#F4F1ED",border:"1.5px solid #E6DFD8",borderRadius:10,padding:"7px 12px",color:"#7A6F65",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>⚙</button>
+        </div>
+      </div>
+
+      <div style={{padding:"14px 14px 0"}}>
+        {tab==="nutrition"&&<NutritionTab data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
+        {tab==="workout"&&<WorkoutTab data={data} setData={setData} onCelebrate={setCelebration} profile={profile}/>}
+        {tab==="body"&&<BodyTab data={data} setData={setData} profile={profile} onCelebrate={setCelebration}/>}
+        {tab==="progress"&&<ProgressTab data={data} setData={setData} profile={profile} BackupCard={BackupCard}/>}
+      </div>
+
+      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:"#fff",borderTop:"1px solid #E6DFD8",display:"flex",padding:"8px 0 20px",boxShadow:"0 -2px 12px rgba(0,0,0,0.08)"}}>
+        {TABS.map(t=>{
+          const active=tab===t.id;
+          const tdone={nutrition:done.nutrition,workout:done.workout,body:done.body}[t.id];
+          return <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,border:"none",background:"none",cursor:"pointer",padding:"5px 2px",display:"flex",flexDirection:"column",alignItems:"center",gap:2,position:"relative"}}>
+            <span style={{fontSize:22}}>{t.icon}</span>
+            <span style={{fontSize:8,fontWeight:800,letterSpacing:"0.07em",color:active?t.color:"#A89B90"}}>{t.label.toUpperCase()}</span>
+            {active&&<div style={{width:22,height:3,borderRadius:99,background:t.color,marginTop:1}}/>}
+            {tdone&&!active&&<div style={{position:"absolute",top:3,right:"18%",width:8,height:8,borderRadius:"50%",background:"#16A34A",border:"2px solid #fff"}}/>}
+          </button>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Wire BackupCard into ProgressTab report subtab
+const _OrigProgressTab=ProgressTab;
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(()=>{});
+  });
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<AppRoot/>);
+</script>
+</body>
+</html>
